@@ -1,11 +1,14 @@
 //! `Harness` — drive the real `App` headlessly against a `ratatui` `TestBackend`.
 //!
 //! Tests feed parsed events through `App::handle_event` (the same path the live
-//! loop uses) and read back the rendered screen. Nothing touches a real
-//! terminal and nothing sleeps. Mirrors the philosophy of `cozy_tui`'s
-//! `testing.Harness`; a virtual clock lands with the Phase 4 timers.
+//! loop uses) and read back the rendered screen. Keystroke tests touch no real
+//! terminal and never sleep. The run-console tests do spawn real short-lived
+//! child processes (`printf`, `cat`, …) and `pump` their output off the channel.
 
 #![cfg(test)]
+
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -19,17 +22,45 @@ use crate::event::AppEvent;
 pub struct Harness {
     pub app: App,
     terminal: Terminal<TestBackend>,
+    run_rx: Receiver<AppEvent>,
 }
 
 impl Harness {
     pub fn new(width: u16, height: u16) -> Self {
         let terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let (tx, run_rx) = mpsc::channel();
+        let mut app = App::with_config(Config::default());
+        app.inject_run_tx(tx);
         let mut h = Self {
-            app: App::with_config(Config::default()),
+            app,
             terminal,
+            run_rx,
         };
         h.draw();
         h
+    }
+
+    /// Drain any background (run-console) events, then redraw.
+    pub fn pump(&mut self) -> &mut Self {
+        while let Ok(ev) = self.run_rx.try_recv() {
+            self.app.handle_event(ev);
+        }
+        self.draw()
+    }
+
+    /// Pump until `pred` holds or `timeout` elapses. Returns whether it held.
+    pub fn pump_until(&mut self, timeout: Duration, mut pred: impl FnMut(&App) -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.pump();
+            if pred(&self.app) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     pub fn with_text(text: &str, width: u16, height: u16) -> Self {
@@ -404,5 +435,128 @@ mod tests {
         h.key(KeyCode::Enter);
         assert!(!h.app.config.show_line_numbers);
         assert_eq!(h.line(0), "G\"x\"", "gutter gone:\n{}", h.screen());
+    }
+
+    // ---- Phase 4: run + output console ----
+
+    fn wait_for_exit(h: &mut Harness) {
+        let done = h.pump_until(Duration::from_secs(5), |a| {
+            a.run.as_ref().is_some_and(|r| !r.is_running())
+        });
+        assert!(done, "process did not finish:\n{}", h.screen());
+    }
+
+    #[test]
+    fn run_streams_stdout_into_the_panel() {
+        let mut h = Harness::new(60, 20);
+        h.app
+            .start_run_argv(vec!["printf".into(), "line one\nline two\n".into()]);
+        h.draw();
+        assert!(h.contains("printf"), "panel title missing:\n{}", h.screen()); // panel title shows the command
+        wait_for_exit(&mut h);
+
+        assert!(h.contains("line one"), "stdout not shown:\n{}", h.screen());
+        assert!(h.contains("line two"));
+        assert_eq!(h.app.run.as_ref().unwrap().exit_code, Some(0));
+        assert!(h.contains("exit 0"));
+    }
+
+    #[test]
+    fn run_shows_stderr_and_nonzero_exit() {
+        let mut h = Harness::new(60, 20);
+        h.app.start_run_argv(vec![
+            "sh".into(),
+            "-c".into(),
+            "echo good; echo bad 1>&2; exit 3".into(),
+        ]);
+        wait_for_exit(&mut h);
+
+        let console = h.app.run.as_ref().unwrap();
+        assert_eq!(console.exit_code, Some(3));
+        assert!(console.rows.iter().any(|r| r.text == "good"));
+        assert!(
+            console
+                .rows
+                .iter()
+                .any(|r| { r.text == "bad" && r.stream == crate::event::OutputStream::Stderr })
+        );
+        assert!(h.contains("exit 3"));
+    }
+
+    #[test]
+    fn stdin_round_trips_through_cat() {
+        let mut h = Harness::new(60, 20);
+        h.app.start_run_argv(vec!["cat".into()]);
+        assert_eq!(h.app.focus, crate::app::Focus::Output);
+
+        h.type_str("ping"); // goes to the panel's stdin line
+        h.key(KeyCode::Enter);
+
+        let echoed = h.pump_until(Duration::from_secs(5), |a| {
+            a.run
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .any(|r| r.text == "ping" && r.stream == crate::event::OutputStream::Stdout)
+        });
+        assert!(echoed, "cat did not echo stdin:\n{}", h.screen());
+
+        h.ctrl('d'); // close stdin → cat exits
+        wait_for_exit(&mut h);
+        assert_eq!(h.app.run.as_ref().unwrap().exit_code, Some(0));
+    }
+
+    #[test]
+    fn stop_terminates_a_running_process() {
+        let mut h = Harness::new(60, 20);
+        h.app.start_run_argv(vec!["sleep".into(), "30".into()]);
+        h.pump();
+        assert!(h.app.run.as_ref().unwrap().is_running());
+
+        h.app.stop_run();
+        assert!(h.app.run.as_ref().unwrap().stopped);
+        assert!(!h.app.run.as_ref().unwrap().is_running());
+        assert_eq!(h.app.run.as_ref().unwrap().exit_code, None);
+
+        // drain the StreamClosed events from the killed pipes; state stays stopped
+        for _ in 0..20 {
+            h.pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(h.app.run.as_ref().unwrap().stopped);
+        assert!(h.contains("stopped"));
+    }
+
+    #[test]
+    fn f5_runs_the_saved_file() {
+        // A real interpreter probably isn't on PATH in CI; point vulpin_path at
+        // a stub that echoes its file argument.
+        let dir = std::env::temp_dir();
+        let stub = dir.join(format!("vulide_stub_{}.sh", std::process::id()));
+        std::fs::write(&stub, "#!/bin/sh\necho \"ran: $1\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let src = dir.join(format!("vulide_prog_{}.vul", std::process::id()));
+        std::fs::write(&src, "G\"hi\"\n").unwrap();
+
+        let mut h = Harness::new(70, 20);
+        h.app.config.vulpin_path = stub.to_string_lossy().into_owned();
+        h.app.open_path(src.clone()).unwrap();
+        h.draw();
+
+        h.key(KeyCode::F(5));
+        wait_for_exit(&mut h);
+        assert!(
+            h.contains(&format!("ran: {}", src.display())),
+            "stub output missing:\n{}",
+            h.screen()
+        );
+
+        std::fs::remove_file(&stub).ok();
+        std::fs::remove_file(&src).ok();
     }
 }

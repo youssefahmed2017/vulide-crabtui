@@ -6,6 +6,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -16,13 +17,22 @@ use crate::buffer::Buffer;
 use crate::complete::Completion;
 use crate::config::Config;
 use crate::event::{AppEvent, EventSource};
+use crate::run::{self, RunConsole};
 use crate::theme::Theme;
 use crate::ui;
 use crate::ui::overlay::{Overlay, PathPrompt, PromptKind, PromptOutcome, expand_tilde};
 use crate::ui::palette::{Cmd, Entry, Palette, PaletteOutcome};
 use crate::ui::theme_picker::{ThemePicker, ThemePickerOutcome};
 
-const TICK: Duration = Duration::from_millis(250);
+/// Input poll granularity for the reader thread (not an output-latency bound).
+const TICK: Duration = Duration::from_millis(100);
+
+/// Which pane keystrokes go to when no overlay is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Editor,
+    Output,
+}
 
 pub struct App {
     pub buffers: Vec<Buffer>,
@@ -36,6 +46,13 @@ pub struct App {
     pub overlay: Overlay,
     /// The live autocomplete popup, recomputed after every editing key.
     pub completion: Option<Completion>,
+    /// The run-output console, present once the file has been run at least once
+    /// this session (until explicitly closed).
+    pub run: Option<RunConsole>,
+    pub focus: Focus,
+    /// Channel the run console's reader threads push onto; set while `run()` owns
+    /// the loop. `None` outside it (e.g. in tests, unless injected).
+    run_tx: Option<Sender<AppEvent>>,
     should_quit: bool,
 }
 
@@ -70,6 +87,9 @@ impl App {
             editor_rows: 20,
             overlay: Overlay::None,
             completion: None,
+            run: None,
+            focus: Focus::Editor,
+            run_tx: None,
             should_quit: false,
         };
         app.apply_config();
@@ -233,6 +253,9 @@ impl App {
             Entry::new("Toggle Line Numbers", Cmd::ToggleLineNumbers),
             Entry::new("Toggle Word Wrap", Cmd::ToggleWordWrap),
             Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
+            Entry::new("Run File (F5)", Cmd::RunFile),
+            Entry::new("Stop Run", Cmd::StopRun),
+            Entry::new("Close Output Panel", Cmd::CloseOutput),
             Entry::new("Reload Config", Cmd::ReloadConfig),
             Entry::new("Quit", Cmd::Quit),
         ];
@@ -308,6 +331,123 @@ impl App {
                     self.set_status(format!("open failed: {e}"));
                 }
             }
+            Cmd::RunFile => self.start_run(),
+            Cmd::StopRun => self.stop_run(),
+            Cmd::CloseOutput => self.close_output(),
+        }
+    }
+
+    // ---- run console ----
+
+    /// F5: run the active buffer through the Vulpin interpreter.
+    pub fn start_run(&mut self) {
+        let Some(tx) = self.run_tx.clone() else {
+            self.set_status("run needs the interactive event loop");
+            return;
+        };
+        let Some(interp) = run::resolve_interpreter(&self.config.vulpin_path) else {
+            self.set_status("vulpin interpreter not found — set vulpin_path in config");
+            return;
+        };
+        let (file, workdir, temp) = match self.run_target() {
+            Ok(t) => t,
+            Err(e) => {
+                self.set_status(format!("run: {e}"));
+                return;
+            }
+        };
+        let mut argv = interp;
+        argv.push(file.to_string_lossy().into_owned());
+
+        // Replacing `self.run` drops the previous console, which kills any child
+        // still running and clears its temp file.
+        match RunConsole::start(argv, &workdir, temp, &tx) {
+            Ok(console) => {
+                self.run = Some(console);
+                self.focus = Focus::Output;
+                self.set_status(format!("running {}", file.display()));
+            }
+            Err(e) => self.set_status(format!("run failed: {e}")),
+        }
+    }
+
+    /// The file to hand the interpreter: the buffer's own path when saved and
+    /// clean, otherwise a temp `.vul` written from the current contents.
+    fn run_target(&self) -> io::Result<(PathBuf, PathBuf, Option<PathBuf>)> {
+        let b = self.buf();
+        if let Some(path) = b.path()
+            && !b.is_dirty()
+        {
+            let workdir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            return Ok((path.to_path_buf(), workdir, None));
+        }
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut tmp = std::env::temp_dir();
+        tmp.push(format!("vulide-run-{}-{nanos}.vul", std::process::id()));
+        let mut text = b.rope().to_string();
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        std::fs::write(&tmp, text)?;
+        let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        Ok((tmp.clone(), workdir, Some(tmp)))
+    }
+
+    pub fn stop_run(&mut self) {
+        match &mut self.run {
+            Some(r) if r.is_running() => {
+                r.stop();
+                self.set_status("run stopped");
+            }
+            Some(_) => self.set_status("run already finished"),
+            None => self.set_status("nothing running"),
+        }
+    }
+
+    fn close_output(&mut self) {
+        if self.run.is_some() {
+            self.run = None; // Drop kills any child + removes the temp file
+            self.focus = Focus::Editor;
+            self.set_status("output panel closed");
+        }
+    }
+
+    fn toggle_output_focus(&mut self) {
+        if self.run.is_none() {
+            self.start_run();
+            return;
+        }
+        self.focus = match self.focus {
+            Focus::Editor => Focus::Output,
+            Focus::Output => Focus::Editor,
+        };
+    }
+
+    #[cfg(test)]
+    pub fn inject_run_tx(&mut self, tx: Sender<AppEvent>) {
+        self.run_tx = Some(tx);
+    }
+
+    /// Test hook: start a run from an explicit argv, skipping interpreter
+    /// resolution and temp-file handling (workdir = cwd).
+    #[cfg(test)]
+    pub fn start_run_argv(&mut self, argv: Vec<String>) {
+        let tx = self.run_tx.clone().expect("inject_run_tx first");
+        let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        match RunConsole::start(argv, &workdir, None, &tx) {
+            Ok(console) => {
+                self.run = Some(console);
+                self.focus = Focus::Output;
+            }
+            Err(e) => self.set_status(format!("run failed: {e}")),
         }
     }
 
@@ -323,38 +463,68 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let events = EventSource::new(TICK);
+        self.run_tx = Some(events.sender());
         terminal.draw(|f| ui::draw(f, self))?;
-        // If `poll` keeps reporting the input fd ready but nothing usable comes
-        // through, the terminal has gone away (closed / EOF). Bail rather than
-        // spin at 100% CPU.
-        let mut dead_reads = 0u32;
+
         while !self.should_quit {
-            match events.next()? {
-                Some(AppEvent::Tick) => dead_reads = 0,
-                // Redraw only on a real event — a dropped event (focus in/out,
-                // key-release) returns `None` and must not trigger a redraw.
-                Some(ev) => {
-                    dead_reads = 0;
-                    self.handle_event(ev);
-                    terminal.draw(|f| ui::draw(f, self))?;
+            let Some(first) = events.next()? else {
+                break; // every sender dropped — shouldn't happen, but exit cleanly
+            };
+            self.handle_event(first);
+            // Coalesce a burst (e.g. a flood of output lines) into one redraw.
+            while let Some(ev) = events.try_next() {
+                if self.should_quit {
+                    break;
                 }
-                None => {
-                    dead_reads += 1;
-                    if dead_reads > 256 {
-                        anyhow::bail!("terminal input stream closed");
-                    }
-                }
+                self.handle_event(ev);
             }
+            terminal.draw(|f| ui::draw(f, self))?;
         }
+        self.run_tx = None;
         Ok(())
     }
 
     pub fn handle_event(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::Key(key) => self.handle_key(key),
+            AppEvent::Paste(text) if self.focus == Focus::Output => {
+                if let Some(r) = &mut self.run {
+                    r.input.insert_str(&text);
+                }
+            }
             AppEvent::Paste(text) => {
                 self.buf_mut().insert_str(&text);
                 self.clear_status();
+            }
+            AppEvent::Output { stream, line } => {
+                if let Some(r) = &mut self.run {
+                    r.on_output(stream, line);
+                }
+            }
+            AppEvent::StreamClosed(_) => {
+                let done = if let Some(r) = &mut self.run {
+                    if r.on_stream_closed() {
+                        r.reap();
+                        r.close_stdin();
+                        Some((r.stopped, r.exit_code))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((stopped, code)) = done {
+                    self.set_status(match (stopped, code) {
+                        (true, _) => "run stopped".to_string(),
+                        (_, Some(0)) => "run finished (exit 0)".to_string(),
+                        (_, Some(c)) => format!("run finished (exit {c})"),
+                        (_, None) => "run finished".to_string(),
+                    });
+                }
+            }
+            AppEvent::InputClosed => {
+                self.set_status("terminal input closed");
+                self.should_quit = true;
             }
             AppEvent::Resize(..) | AppEvent::Tick => {}
         }
@@ -459,6 +629,16 @@ impl App {
         if self.handle_overlay_key(key) {
             return;
         }
+        // Run controls work from either pane.
+        match key.code {
+            KeyCode::F(5) => return self.start_run(),
+            KeyCode::F(6) => return self.toggle_output_focus(),
+            _ => {}
+        }
+        if self.focus == Focus::Output {
+            self.handle_output_key(key);
+            return;
+        }
         if self.completion.is_some() && self.handle_completion_key(key) {
             return;
         }
@@ -469,6 +649,61 @@ impl App {
         } else {
             None
         };
+    }
+
+    /// Keystrokes while the output panel has focus: scrollback nav, a stdin line,
+    /// Esc back to the editor. `Ctrl+C` stops a running child (else quits).
+    fn handle_output_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if ctrl {
+            match key.code {
+                KeyCode::Char('q') => {
+                    self.should_quit = true;
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    if self.run.as_ref().is_some_and(RunConsole::is_running) {
+                        self.stop_run();
+                    } else {
+                        self.should_quit = true;
+                    }
+                    return;
+                }
+                KeyCode::Char('p') => return self.open_palette(),
+                KeyCode::Char('d') => {
+                    if let Some(r) = &mut self.run {
+                        r.close_stdin();
+                        self.set_status("stdin closed (EOF)");
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let Some(r) = &mut self.run else {
+            self.focus = Focus::Editor;
+            return;
+        };
+        let running = r.is_running();
+        match key.code {
+            KeyCode::Esc => self.focus = Focus::Editor,
+            KeyCode::Up => r.scroll_up(1),
+            KeyCode::Down => r.scroll_down(1),
+            KeyCode::PageUp => r.scroll_up(10),
+            KeyCode::PageDown => r.scroll_down(10),
+            KeyCode::Home => r.scroll_up(usize::MAX),
+            KeyCode::End => r.scroll_to_bottom(),
+            KeyCode::Enter if running => {
+                let line = r.input.rope().to_string();
+                r.input = Buffer::new();
+                r.send_stdin(&line);
+                r.scroll_to_bottom();
+            }
+            KeyCode::Backspace if running => r.input.delete_backward(),
+            KeyCode::Char(c) if running && !ctrl && !alt => r.input.insert_char(c),
+            _ => {}
+        }
     }
 
     /// Route a key to the autocomplete popup. Returns `true` if it was consumed

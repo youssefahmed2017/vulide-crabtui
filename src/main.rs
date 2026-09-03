@@ -13,6 +13,7 @@ mod buffer;
 mod complete;
 mod config;
 mod event;
+mod run;
 mod syntax;
 mod theme;
 mod ui;

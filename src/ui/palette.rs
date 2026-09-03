@@ -38,6 +38,9 @@ pub enum Cmd {
     ToggleAutoClose,
     ReloadConfig,
     OpenRecent(PathBuf),
+    RunFile,
+    StopRun,
+    CloseOutput,
 }
 
 pub struct Entry {

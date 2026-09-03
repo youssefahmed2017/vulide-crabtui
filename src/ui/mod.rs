@@ -1,11 +1,13 @@
 //! Screen layout and draw dispatch.
 //!
-//! Phase 3: a tab strip above the editor, a one-row status bar below. Panels
-//! (output console, algorithm viewer) slot in around this in Phases 4–5.
+//! Rows: an optional tab strip, the editor, an optional run-output panel, and a
+//! one-row status bar. The algorithm viewer slots in beside the editor in
+//! Phase 5.
 
 pub mod editor;
 pub mod overlay;
 pub mod palette;
+pub mod panel;
 pub mod status;
 pub mod tabs;
 pub mod theme_picker;
@@ -13,29 +15,42 @@ pub mod theme_picker;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 
-use crate::app::App;
+use crate::app::{App, Focus};
 use crate::complete;
 use overlay::Overlay;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let show_tabs = app.buffers.len() > 1;
-    let constraints = if show_tabs {
-        vec![
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ]
+
+    let mut rows = Vec::new();
+    if show_tabs {
+        rows.push(Constraint::Length(1));
+    }
+    rows.push(Constraint::Min(1)); // editor
+    let show_panel = app.run.is_some();
+    if show_panel {
+        let h = ((area.height as usize) / 3).clamp(6, 16) as u16;
+        rows.push(Constraint::Length(h));
+    }
+    rows.push(Constraint::Length(1)); // status
+    let chunks = Layout::vertical(rows).split(area);
+
+    let mut i = 0;
+    if show_tabs {
+        tabs::render(f, app, chunks[i]);
+        i += 1;
+    }
+    let editor_area = chunks[i];
+    i += 1;
+    let panel_area = if show_panel {
+        let a = chunks[i];
+        i += 1;
+        Some(a)
     } else {
-        vec![Constraint::Min(1), Constraint::Length(1)]
+        None
     };
-    let chunks = Layout::vertical(constraints).split(area);
-    let (editor_area, status_area) = if show_tabs {
-        tabs::render(f, app, chunks[0]);
-        (chunks[1], chunks[2])
-    } else {
-        (chunks[0], chunks[1])
-    };
+    let status_area = chunks[i];
 
     app.editor_rows = editor_area.height as usize;
     let show_numbers = app.config.show_line_numbers;
@@ -46,11 +61,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         show_numbers,
         editor_area,
     );
+
+    if let (Some(panel_area), Some(console)) = (panel_area, &app.run) {
+        panel::render(
+            f,
+            console,
+            &app.theme,
+            app.focus == Focus::Output,
+            panel_area,
+        );
+    }
+
     status::render(f, app, status_area);
 
     // Autocomplete popup floats over the editor, anchored to the cursor. It is
-    // non-modal, so it never draws while an overlay owns the screen.
+    // non-modal, so it never draws while an overlay owns the screen or the
+    // output panel has focus.
     if !app.overlay.is_open()
+        && app.focus == Focus::Editor
         && let (Some(c), Some(pos)) = (&app.completion, cursor_screen)
     {
         complete::render_popup(f, c, pos, &app.theme, editor_area);
