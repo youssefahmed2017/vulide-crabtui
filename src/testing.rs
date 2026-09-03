@@ -98,6 +98,16 @@ impl Harness {
     pub fn contains(&self, needle: &str) -> bool {
         self.screen().contains(needle)
     }
+
+    /// The rendered cell at `(x, y)` — for asserting on colour/style.
+    pub fn cell(&self, x: u16, y: u16) -> ratatui::buffer::Cell {
+        self.terminal
+            .backend()
+            .buffer()
+            .cell((x, y))
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +129,55 @@ mod tests {
         h.type_str("G\"hello\"");
         assert!(h.contains("G\"hello\""));
         assert!(h.contains("Ln 1, Col 9"));
+    }
+
+    #[test]
+    fn ctrl_t_cycles_theme_and_recolours() {
+        use ratatui::crossterm::event::KeyModifiers;
+        use ratatui::style::Color;
+
+        let mut h = Harness::with_text("G\"hi\"", 40, 6);
+        let g_before = h.cell(4, 0).fg; // the 'G', coloured by theme.command
+        assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
+
+        h.key_mods(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(h.app.theme.name, "Light (Catppuccin Latte)");
+        assert!(h.contains("theme: Light"));
+        // Latte's `command` colour differs from Mocha's, so the 'G' recoloured
+        assert_ne!(h.cell(4, 0).fg, g_before);
+        assert_ne!(h.cell(4, 0).fg, Color::Reset);
+    }
+
+    #[test]
+    fn autocomplete_popup_appears_and_accepts() {
+        let mut h = Harness::with_text("counter = 0\n", 40, 10);
+        h.app.buffer.set_cursor(Position { line: 1, col: 0 }, false);
+        h.draw();
+
+        h.type_str("G $c");
+        assert!(h.app.completion.is_some(), "popup should be open on `$c`");
+        assert!(h.contains("counter"), "candidate shown:\n{}", h.screen());
+
+        h.key(KeyCode::Tab);
+        assert!(h.app.completion.is_none(), "popup closes on accept");
+        assert_eq!(h.app.buffer.line_text(1), "G $counter");
+    }
+
+    #[test]
+    fn autocomplete_dismisses_on_esc_without_editing() {
+        let mut h = Harness::with_text("value = 1\n", 40, 10);
+        h.app.buffer.set_cursor(Position { line: 1, col: 0 }, false);
+        h.draw();
+
+        h.type_str("$va");
+        assert!(h.app.completion.is_some());
+        h.key(KeyCode::Esc);
+        assert!(h.app.completion.is_none());
+        assert_eq!(h.app.buffer.line_text(1), "$va");
+        assert!(
+            !h.contains("value = 1\nvalue"),
+            "no completion was inserted"
+        );
     }
 
     #[test]

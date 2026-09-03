@@ -10,8 +10,10 @@ use crate::app::App;
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
-    let base = Style::default().fg(theme.status_fg).bg(theme.status_bg);
-    let accent = Style::default().fg(theme.accent).bg(theme.status_bg);
+    let base = Style::default()
+        .fg(theme.statusbar_fg)
+        .bg(theme.statusbar_bg);
+    let accent = Style::default().fg(theme.accent).bg(theme.statusbar_bg);
 
     let cursor = app.buffer.cursor();
     let pos = format!(" Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);

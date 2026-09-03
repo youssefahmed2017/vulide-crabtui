@@ -16,9 +16,11 @@ use crate::theme::Theme;
 
 const GUTTER_MIN: u16 = 4;
 
-pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) {
+/// Renders the editor and returns the cursor's screen cell, when it is visible
+/// (the autocomplete popup anchors to it).
+pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) -> Option<(u16, u16)> {
     if area.width == 0 || area.height == 0 {
-        return;
+        return None;
     }
     f.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
 
@@ -27,7 +29,7 @@ pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) {
     let text_w = area.width.saturating_sub(gutter_w) as usize;
     let text_h = area.height as usize;
     if text_w == 0 {
-        return;
+        return None;
     }
 
     let cursor = buf.cursor();
@@ -48,9 +50,9 @@ pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) {
         }
         let is_current = ln == cursor.line;
         let gutter_style = Style::default().bg(theme.bg).fg(if is_current {
-            theme.gutter_current_fg
+            theme.line_hl
         } else {
-            theme.gutter_fg
+            theme.line_fg
         });
         let label = format!("{:>w$} ", ln + 1, w = (gutter_w - 1) as usize);
 
@@ -73,15 +75,18 @@ pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) {
     f.render_widget(Paragraph::new(lines), area);
 
     // Real cursor, only when on screen.
+    let mut cursor_screen = None;
     if cursor.line >= buf.scroll_top && cursor.line < buf.scroll_top + text_h {
         let y = area.y + (cursor.line - buf.scroll_top) as u16;
         if cursor_disp >= buf.scroll_left {
             let x = area.x + gutter_w + (cursor_disp - buf.scroll_left) as u16;
             if x < area.x + area.width {
                 f.set_cursor_position(TermPos::new(x, y));
+                cursor_screen = Some((x, y));
             }
         }
     }
+    cursor_screen
 }
 
 fn reconcile_scroll(
@@ -117,7 +122,7 @@ fn styled_text(
     tokenizer: &VulpinTokenizer,
 ) -> Vec<Span<'static>> {
     let base_bg = if is_current {
-        theme.current_line_bg
+        theme.current_line
     } else {
         theme.bg
     };
@@ -150,12 +155,10 @@ fn styled_text(
         }
         let here = Position { line, col };
         if selection.is_some_and(|(a, b)| a <= here && here < b) {
-            style = style.bg(theme.selection_bg);
+            style = style.bg(theme.sel);
         }
         if Some(here) == bracket_match || Some(here) == cursor_bracket {
-            style = style
-                .fg(theme.match_bracket_fg)
-                .add_modifier(Modifier::BOLD);
+            style = style.fg(theme.match_bracket).add_modifier(Modifier::BOLD);
         }
 
         if group_style == Some(style) {

@@ -11,6 +11,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::buffer::Buffer;
+use crate::complete::Completion;
 use crate::event::{AppEvent, EventSource};
 use crate::theme::Theme;
 use crate::ui;
@@ -21,22 +22,38 @@ const TICK: Duration = Duration::from_millis(250);
 pub struct App {
     pub buffer: Buffer,
     pub theme: Theme,
+    pub themes: Vec<Theme>,
+    pub theme_idx: usize,
     pub status: String,
     pub editor_rows: usize,
     pub overlay: Overlay,
+    /// The live autocomplete popup, recomputed after every editing key.
+    pub completion: Option<Completion>,
     should_quit: bool,
 }
 
 impl App {
     pub fn new() -> Self {
+        let themes = Theme::builtins();
         Self {
             buffer: Buffer::new(),
-            theme: Theme::mocha(),
+            theme: themes[0].clone(),
+            themes,
+            theme_idx: 0,
             status: String::new(),
             editor_rows: 20,
             overlay: Overlay::None,
+            completion: None,
             should_quit: false,
         }
+    }
+
+    /// Advance to the next bundled theme (Ctrl+T).
+    pub fn cycle_theme(&mut self) {
+        self.theme_idx = (self.theme_idx + 1) % self.themes.len();
+        self.theme = self.themes[self.theme_idx].clone();
+        let name = self.theme.name.clone();
+        self.set_status(format!("theme: {name}"));
     }
 
     pub fn open_path(&mut self, path: PathBuf) -> Result<()> {
@@ -136,7 +153,48 @@ impl App {
         if self.handle_overlay_key(key) {
             return;
         }
+        if self.completion.is_some() && self.handle_completion_key(key) {
+            return;
+        }
+        self.handle_key_inner(key);
+        // The `$word` context under the cursor may have changed — re-scan.
+        self.completion = Completion::detect(&self.buffer);
+    }
 
+    /// Route a key to the autocomplete popup. Returns `true` if it was consumed
+    /// (navigation / accept / dismiss); `false` lets the key edit as normal and
+    /// the popup refreshes afterwards.
+    fn handle_completion_key(&mut self, key: KeyEvent) -> bool {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        let Some(c) = &mut self.completion else {
+            return false;
+        };
+        match key.code {
+            KeyCode::Up => c.move_up(),
+            KeyCode::Down => c.move_down(),
+            KeyCode::Esc => self.completion = None,
+            KeyCode::Tab => {
+                let tail = c.completion_tail().to_string();
+                self.buffer.insert_str(&tail);
+                self.completion = None;
+            }
+            // Enter still inserts a newline; it just closes the popup first so it
+            // can't silently swap in a half-typed name.
+            KeyCode::Enter => {
+                self.completion = None;
+                return false;
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_key_inner(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -149,6 +207,10 @@ impl App {
                 // modal `:` command line (BatScript wants Vim-like) land in Phase 1.5.
                 KeyCode::Char('q') | KeyCode::Char('c') => {
                     self.should_quit = true;
+                    return;
+                }
+                KeyCode::Char('t') => {
+                    self.cycle_theme();
                     return;
                 }
                 KeyCode::Char('s') => {

@@ -119,17 +119,19 @@ pub fn render_save_as(f: &mut Frame, prompt: &SaveAs, theme: &Theme, area: Rect)
     let rect = centered_rect(64, 7 + extra, area);
     f.render_widget(Clear, rect);
 
-    let panel = Style::default().fg(theme.fg).bg(theme.status_bg);
-    let muted = Style::default().fg(theme.status_fg).bg(theme.status_bg);
+    let panel = Style::default().fg(theme.fg).bg(theme.statusbar_bg);
+    let muted = Style::default()
+        .fg(theme.statusbar_fg)
+        .bg(theme.statusbar_bg);
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::symmetric(2, 1))
-        .border_style(Style::default().fg(theme.accent).bg(theme.status_bg))
+        .border_style(Style::default().fg(theme.accent).bg(theme.statusbar_bg))
         .title(Span::styled(
             " Save As ",
             Style::default()
                 .fg(theme.accent)
-                .bg(theme.status_bg)
+                .bg(theme.statusbar_bg)
                 .add_modifier(Modifier::BOLD),
         ))
         .style(panel);
@@ -148,8 +150,8 @@ pub fn render_save_as(f: &mut Frame, prompt: &SaveAs, theme: &Theme, area: Rect)
         lines.push(Line::from(Span::styled(
             err.clone(),
             Style::default()
-                .fg(theme.match_bracket_fg)
-                .bg(theme.status_bg)
+                .fg(theme.output_err)
+                .bg(theme.statusbar_bg)
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::default());
@@ -161,7 +163,7 @@ pub fn render_save_as(f: &mut Frame, prompt: &SaveAs, theme: &Theme, area: Rect)
             "[ Save ]",
             Style::default()
                 .fg(theme.accent)
-                .bg(theme.status_bg)
+                .bg(theme.statusbar_bg)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("      Enter save · Esc cancel", muted),
