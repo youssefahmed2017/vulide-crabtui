@@ -253,9 +253,49 @@ mod tests {
         assert!(h.app.completion.is_some(), "popup should be open on `$c`");
         assert!(h.contains("counter"), "candidate shown:\n{}", h.screen());
 
-        h.key(KeyCode::Tab);
+        h.key(KeyCode::Enter); // Enter accepts (Tab also works)
         assert!(h.app.completion.is_none(), "popup closes on accept");
         assert_eq!(h.app.buf().line_text(1), "G $counter");
+        assert_eq!(
+            h.app.buf().line_count(),
+            2,
+            "Enter accepted, did not add a line"
+        );
+    }
+
+    #[test]
+    fn undefined_variable_is_flagged_in_the_status_bar() {
+        let mut h = Harness::with_text("name = 1\nG $name\n", 60, 8);
+        assert!(
+            !h.contains("undefined"),
+            "clean file, no warning:\n{}",
+            h.screen()
+        );
+
+        // introduce a typo
+        h.app.buffers[0] = Buffer::from_str("name = 1\nG $naem\n");
+        h.draw();
+        assert_eq!(h.app.diagnostics.len(), 1);
+        assert!(h.contains("⚠ 1 undefined var"), "status:\n{}", h.screen());
+
+        // the flagged span is red in the editor (col 3 + 4-wide gutter)
+        let cell = h.cell(7, 1); // the 'n' of `naem` on row 1
+        assert_eq!(cell.fg, h.app.theme.output_err);
+        assert!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn enter_makes_a_newline_when_the_hint_has_nothing_to_insert() {
+        let mut h = Harness::with_text("", 40, 8);
+        h.type_str("K");
+        assert!(h.app.completion.is_some());
+        h.key(KeyCode::Enter);
+        assert!(h.app.completion.is_none());
+        assert_eq!(
+            h.app.buf().rope().to_string(),
+            "K\n",
+            "Enter still broke the line"
+        );
     }
 
     #[test]
@@ -271,7 +311,7 @@ mod tests {
         assert!(h.app.completion.is_some());
         assert!(h.contains("shout"), "fn candidate:\n{}", h.screen());
         assert!(h.contains("fn(msg)"), "signature shown:\n{}", h.screen());
-        h.key(KeyCode::Tab);
+        h.key(KeyCode::Enter);
         assert_eq!(h.app.buf().line_text(3), "G $shout");
 
         // `.` offers the string methods
@@ -280,7 +320,7 @@ mod tests {
         assert!(h.contains("UPPERCASE"), "methods:\n{}", h.screen());
         h.type_str("L");
         assert_eq!(h.app.completion.as_ref().unwrap().items.len(), 1);
-        h.key(KeyCode::Tab);
+        h.key(KeyCode::Enter);
         assert_eq!(h.app.buf().line_text(3), "G $shout.L");
     }
 
@@ -913,6 +953,64 @@ mod tests {
         assert!(h.app.panel_rect.is_some());
         assert!(h.app.search_rect.is_some());
         h.app.stop_run();
+    }
+
+    // ---- Phase 5: structure outline ----
+
+    #[test]
+    fn f7_shows_outline_and_enter_jumps_to_the_line() {
+        let src = "G \"start\"\nF greet(name)\n  ? $name\n    R \"hi\"\n  ;\n~\nL loop\nJ loop\n";
+        let mut h = Harness::with_text(src, 80, 20);
+
+        h.key(KeyCode::F(7));
+        assert!(h.app.show_algo);
+        assert_eq!(h.app.focus, crate::app::Focus::Algo);
+        assert!(h.contains("Outline"), "sidebar:\n{}", h.screen());
+        assert!(h.contains("greet(name)"), "fn shown:\n{}", h.screen());
+        assert!(h.contains("loop"), "label shown:\n{}", h.screen());
+
+        // first item is the function on line 1 (0-based)
+        assert_eq!(h.app.algo_items[0].line, 1);
+        h.key(KeyCode::Enter);
+        assert_eq!(h.app.focus, crate::app::Focus::Editor);
+        assert_eq!(h.app.buf().cursor().line, 1);
+
+        // the outline stays visible after a jump — F7 now just re-focuses it
+        h.key(KeyCode::F(7));
+        assert_eq!(h.app.focus, crate::app::Focus::Algo);
+        assert!(h.app.show_algo);
+        h.key(KeyCode::End); // last item = the jump on line 7
+        assert_eq!(
+            h.app.algo_items[h.app.algo_selected].kind,
+            crate::algo::Kind::Jump
+        );
+        h.key(KeyCode::Enter);
+        assert_eq!(h.app.buf().cursor().line, 7);
+
+        // F7 (re-focus) then F7 (hide)
+        h.key(KeyCode::F(7));
+        h.key(KeyCode::F(7));
+        assert!(!h.app.show_algo);
+        assert!(h.app.algo_rect.is_none());
+    }
+
+    #[test]
+    fn outline_click_jumps_and_narrow_terminal_hides_it() {
+        let src = "F a()\n~\nF b()\n~\n";
+        let mut h = Harness::with_text(src, 80, 16);
+        h.key(KeyCode::F(7));
+        let ar = h.app.algo_rect.expect("sidebar rect");
+        // click the second row (F b) inside the panel body
+        h.click(ar.x + 2, ar.y + 2);
+        assert_eq!(h.app.buf().cursor().line, 2);
+        assert_eq!(h.app.focus, crate::app::Focus::Editor);
+
+        // a too-narrow terminal doesn't lay the sidebar out even when enabled
+        let mut narrow = Harness::new(40, 16);
+        narrow.app.show_algo = true;
+        narrow.draw();
+        assert!(narrow.app.algo_rect.is_none(), "hidden below min width");
+        assert!(narrow.app.editor_rect.width > 0);
     }
 
     #[test]

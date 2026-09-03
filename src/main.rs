@@ -8,11 +8,13 @@
 // later phases land.
 #![allow(dead_code)]
 
+mod algo;
 mod app;
 mod buffer;
 mod complete;
 mod config;
 mod event;
+mod lint;
 mod run;
 mod search;
 mod syntax;

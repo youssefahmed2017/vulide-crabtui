@@ -21,7 +21,7 @@ REQUIREMENTS
 THE "RUN" FEATURE (F5)
 ---------------------
 F5 runs the current file through the Vulpin interpreter, searched as:
-  vulpin on PATH  ->  python3 / python / py -m vulpin
+  vulpin on PATH  (it is a C program — no python fallback)
 If none is found the status bar just says so; the editor still works.
 Set an explicit path in ~/.config/vulide/config.toml (key: vulpin_path).
 

@@ -22,6 +22,8 @@ pub struct Config {
     pub auto_indent: bool,
     pub show_autocomplete: bool,
     pub show_line_numbers: bool,
+    /// Show the structure/outline sidebar (`F7`).
+    pub show_algo: bool,
     /// Capture the mouse so the status-bar ▶ button and click-to-focus work.
     /// Turn off to get the terminal's own text selection back everywhere.
     pub mouse: bool,
@@ -42,6 +44,7 @@ impl Default for Config {
             auto_indent: true,
             show_autocomplete: true,
             show_line_numbers: true,
+            show_algo: false,
             mouse: true,
             auto_save: false,
             recent_files: Vec::new(),

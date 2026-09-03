@@ -1,9 +1,10 @@
 //! Screen layout and draw dispatch.
 //!
-//! Rows: an optional tab strip, the editor, an optional draggable splitter +
-//! run-output panel, and a one-row status bar. The algorithm viewer slots in
-//! beside the editor in Phase 5.
+//! Rows: an optional tab strip, the editor (optionally sharing its row with the
+//! structure-outline sidebar), an optional draggable splitter + run-output
+//! panel, an optional find bar, and a one-row status bar.
 
+pub mod algo;
 pub mod editor;
 pub mod help;
 pub mod overlay;
@@ -23,12 +24,16 @@ use overlay::Overlay;
 
 /// Minimum rows the editor keeps when the panel is open / being resized.
 pub const MIN_EDITOR_ROWS: u16 = 3;
+/// Below this total width the outline sidebar hides itself rather than starve
+/// the editor of columns.
+pub const ALGO_MIN_TOTAL_WIDTH: u16 = 56;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let show_tabs = app.buffers.len() > 1;
     let show_panel = app.run.is_some();
     let show_search = app.search.is_some();
+    let show_algo = app.show_algo && area.width >= ALGO_MIN_TOTAL_WIDTH;
 
     let mut rows = Vec::new();
     if show_tabs {
@@ -52,8 +57,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         app.tab_hits.clear();
     }
-    let editor_area = chunks[i];
+    let editor_row = chunks[i];
     i += 1;
+    let (algo_area, editor_area) = if show_algo {
+        let w = (area.width / 4).clamp(18, 32);
+        let cols =
+            Layout::horizontal([Constraint::Length(w), Constraint::Min(20)]).split(editor_row);
+        (Some(cols[0]), cols[1])
+    } else {
+        (None, editor_row)
+    };
     let (splitter_area, panel_area) = if show_panel {
         let s = chunks[i];
         let p = chunks[i + 1];
@@ -76,6 +89,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.splitter_rect = splitter_area;
     app.panel_rect = panel_area;
     app.search_rect = search_area;
+    app.algo_rect = algo_area;
+
+    // Rebuild the outline (cheap) and keep the selection/scroll consistent.
+    if show_algo {
+        app.algo_items = crate::algo::outline(&app.buffers[app.active]);
+        let n = app.algo_items.len();
+        if app.algo_selected >= n {
+            app.algo_selected = n.saturating_sub(1);
+        }
+        let body_h = algo_area
+            .map(|a| a.height.saturating_sub(2) as usize)
+            .unwrap_or(0);
+        app.algo_scroll = scroll_into_view(app.algo_selected, app.algo_scroll, body_h);
+    } else {
+        app.algo_items.clear();
+        app.algo_scroll = 0;
+    }
+
+    app.diagnostics = crate::lint::check(&app.buffers[app.active]);
 
     app.editor_rows = editor_area.height as usize;
     let show_numbers = app.config.show_line_numbers;
@@ -84,6 +116,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         &[]
     };
+    let diag_ranges: Vec<(crate::buffer::Position, crate::buffer::Position)> =
+        app.diagnostics.iter().map(|d| (d.start, d.end)).collect();
     let cursor_screen = editor::render(
         f,
         &mut app.buffers[app.active],
@@ -91,8 +125,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         show_numbers,
         search_matches,
         app.search_idx,
+        &diag_ranges,
         editor_area,
     );
+
+    if let Some(aa) = algo_area {
+        algo::render(
+            f,
+            &app.algo_items,
+            app.algo_selected,
+            app.algo_scroll,
+            &app.theme,
+            app.focus == Focus::Algo,
+            aa,
+        );
+    }
 
     if let Some(s) = splitter_area {
         splitter::render(
@@ -156,6 +203,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Overlay::Help(h) => Some(help::render(f, h, &app.theme, area)),
         Overlay::None => None,
     };
+}
+
+/// Smallest scroll offset that keeps row `sel` within a `h`-tall viewport.
+fn scroll_into_view(sel: usize, cur: usize, h: usize) -> usize {
+    if h == 0 {
+        0
+    } else if sel < cur {
+        sel
+    } else if sel >= cur + h {
+        sel + 1 - h
+    } else {
+        cur
+    }
 }
 
 /// Panel height: the user's dragged value, else a third of the screen, always

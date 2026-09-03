@@ -22,7 +22,9 @@ const SCROLLBACK: usize = 5000;
 /// Resolve the interpreter command (argv prefix, before the file argument):
 ///   1. an explicit, existing `config.vulpin_path`
 ///   2. a `vulpin` binary on `$PATH`
-///   3. `python3 -m vulpin` as a last resort
+///
+/// Vulpin is a C program (`Vulpin/src`, built with tcc/gcc) — there is no
+/// `python -m vulpin` module, so there's no Python fallback.
 pub fn resolve_interpreter(config_path: &str) -> Option<Vec<String>> {
     if !config_path.trim().is_empty() {
         let p = Path::new(config_path.trim());
@@ -33,11 +35,6 @@ pub fn resolve_interpreter(config_path: &str) -> Option<Vec<String>> {
     for name in ["vulpin", "vulpin.exe"] {
         if let Some(p) = which(name) {
             return Some(vec![p.to_string_lossy().into_owned()]);
-        }
-    }
-    for py in ["python3", "python", "py"] {
-        if which(py).is_some() {
-            return Some(vec![py.into(), "-m".into(), "vulpin".into()]);
         }
     }
     None

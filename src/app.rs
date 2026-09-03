@@ -38,6 +38,8 @@ const TICK: Duration = Duration::from_millis(100);
 pub enum Focus {
     Editor,
     Output,
+    /// The structure-outline sidebar (`F7`).
+    Algo,
 }
 
 pub struct App {
@@ -59,6 +61,17 @@ pub struct App {
     /// User-dragged output-panel height (rows); `None` = the default third.
     pub panel_height: Option<u16>,
     pub dragging_splitter: bool,
+
+    /// Undefined-variable warnings, recomputed each draw.
+    pub diagnostics: Vec<crate::lint::Diagnostic>,
+
+    // ---- structure outline (F7) ----
+    pub show_algo: bool,
+    pub algo_items: Vec<crate::algo::Item>,
+    pub algo_selected: usize,
+    /// Index of the first outline row drawn (kept so mouse clicks map to rows).
+    pub algo_scroll: usize,
+    pub algo_rect: Option<Rect>,
 
     // ---- find / replace ----
     /// The find/replace bar, present while it is open.
@@ -117,6 +130,7 @@ impl App {
             .position(|t| t.name == config.theme)
             .unwrap_or(0);
         let theme = themes[theme_idx].clone();
+        let show_algo = config.show_algo;
 
         let mut app = Self {
             buffers: vec![Buffer::new()],
@@ -133,6 +147,12 @@ impl App {
             focus: Focus::Editor,
             panel_height: None,
             dragging_splitter: false,
+            diagnostics: Vec::new(),
+            show_algo,
+            algo_items: Vec::new(),
+            algo_selected: 0,
+            algo_scroll: 0,
+            algo_rect: None,
             search: None,
             search_matches: Vec::new(),
             search_idx: 0,
@@ -339,6 +359,7 @@ impl App {
             Entry::new("Toggle Line Numbers", Cmd::ToggleLineNumbers),
             Entry::new("Toggle Word Wrap", Cmd::ToggleWordWrap),
             Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
+            Entry::new("Toggle Structure Outline (F7)", Cmd::ToggleOutline),
             Entry::new(
                 "Toggle Mouse (for terminal text selection)",
                 Cmd::ToggleMouse,
@@ -408,6 +429,7 @@ impl App {
                     on_off(self.config.auto_close_brackets)
                 ));
             }
+            Cmd::ToggleOutline => self.toggle_algo(),
             Cmd::ToggleMouse => {
                 self.config.mouse = !self.config.mouse;
                 self.save_config();
@@ -533,10 +555,83 @@ impl App {
             self.start_run();
             return;
         }
-        self.focus = match self.focus {
-            Focus::Editor => Focus::Output,
-            Focus::Output => Focus::Editor,
+        self.focus = if self.focus == Focus::Output {
+            Focus::Editor
+        } else {
+            Focus::Output
         };
+    }
+
+    // ---- structure outline ----
+
+    /// `F7` cycles the outline: hidden → shown+focused → (jump leaves it shown
+    /// but unfocused) → focused again → hidden.
+    fn toggle_algo(&mut self) {
+        if !self.show_algo {
+            self.show_algo = true;
+            self.focus = Focus::Algo;
+            self.set_status("outline — ↑↓ select · Enter jump · Esc editor · F7 hide");
+        } else if self.focus != Focus::Algo {
+            self.focus = Focus::Algo;
+        } else {
+            self.show_algo = false;
+            self.focus = Focus::Editor;
+            self.set_status("outline hidden");
+        }
+        self.config.show_algo = self.show_algo;
+        self.save_config();
+    }
+
+    /// Keystrokes while the outline has focus: move the selection, Enter jumps
+    /// the editor to that line, Esc/F7 leave.
+    fn handle_algo_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Char('c') => {
+                    self.should_quit = true;
+                    return;
+                }
+                KeyCode::Char('p') => return self.open_palette(),
+                _ => return,
+            }
+        }
+        let n = self.algo_items.len();
+        match key.code {
+            KeyCode::Esc => self.focus = Focus::Editor,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.algo_selected = self.algo_selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.algo_selected + 1 < n {
+                    self.algo_selected += 1;
+                }
+            }
+            KeyCode::Home => self.algo_selected = 0,
+            KeyCode::End => self.algo_selected = n.saturating_sub(1),
+            KeyCode::Enter => self.jump_to_selected_outline_item(),
+            _ => {}
+        }
+    }
+
+    fn jump_to_selected_outline_item(&mut self) {
+        if let Some(item) = self.algo_items.get(self.algo_selected) {
+            let line = item.line;
+            self.buf_mut()
+                .set_cursor(crate::buffer::Position { line, col: 0 }, false);
+        }
+        self.focus = Focus::Editor;
+    }
+
+    /// The outline row under screen row `row`, if the click landed on one.
+    fn algo_row_at(&self, row: u16) -> Option<usize> {
+        let r = self.algo_rect?;
+        let body_top = r.y + 1; // top border
+        let body_bot = r.y + r.height.saturating_sub(1); // bottom border
+        if row < body_top || row >= body_bot {
+            return None;
+        }
+        let idx = self.algo_scroll + (row - body_top) as usize;
+        (idx < self.algo_items.len()).then_some(idx)
     }
 
     /// Label for the status-bar button; `is_running` also decides its colour.
@@ -732,6 +827,22 @@ impl App {
                 }
                 return true;
             }
+            MouseEventKind::ScrollUp
+                if self.algo_rect.is_some_and(|r| hit(r, col, row))
+                    && !self.algo_items.is_empty() =>
+            {
+                self.algo_selected = self.algo_selected.saturating_sub(1);
+                return true;
+            }
+            MouseEventKind::ScrollDown
+                if self.algo_rect.is_some_and(|r| hit(r, col, row))
+                    && !self.algo_items.is_empty() =>
+            {
+                if self.algo_selected + 1 < self.algo_items.len() {
+                    self.algo_selected += 1;
+                }
+                return true;
+            }
             MouseEventKind::Down(MouseButton::Left) => {}
             _ => return false,
         }
@@ -786,8 +897,21 @@ impl App {
             return true;
         }
 
-        // Otherwise a click just moves focus between the two panes, so the
-        // keyboard always goes where you're looking.
+        // Outline sidebar: a click on a row jumps the editor there; elsewhere
+        // in the panel just focuses it.
+        if self.algo_rect.is_some_and(|r| hit(r, col, row)) {
+            match self.algo_row_at(row) {
+                Some(i) => {
+                    self.algo_selected = i;
+                    self.jump_to_selected_outline_item();
+                }
+                None => self.focus = Focus::Algo,
+            }
+            return true;
+        }
+
+        // Otherwise a click just moves focus between panes, so the keyboard
+        // always goes where you're looking.
         if self.panel_rect.is_some_and(|r| hit(r, col, row)) && self.run.is_some() {
             self.focus = Focus::Output;
         } else if self.editor_rect.height > 0 && hit(self.editor_rect, col, row) {
@@ -1061,11 +1185,16 @@ impl App {
         match key.code {
             KeyCode::F(5) => return self.start_run(),
             KeyCode::F(6) => return self.toggle_output_focus(),
+            KeyCode::F(7) => return self.toggle_algo(),
             KeyCode::F(1) => return self.open_help(),
             _ => {}
         }
         if self.focus == Focus::Output {
             self.handle_output_key(key);
+            return;
+        }
+        if self.focus == Focus::Algo {
+            self.handle_algo_key(key);
             return;
         }
         if self.search.is_some() {
@@ -1156,16 +1285,16 @@ impl App {
             KeyCode::Up => c.move_up(),
             KeyCode::Down => c.move_down(),
             KeyCode::Esc => self.completion = None,
-            KeyCode::Tab => {
+            // Enter and Tab both accept. When there's nothing left to insert
+            // (a command reminder, or a fully-typed method) Enter falls through
+            // so it still makes a newline.
+            KeyCode::Enter | KeyCode::Tab => {
                 let tail = c.completion_tail().to_string();
+                self.completion = None;
+                if tail.is_empty() {
+                    return key.code != KeyCode::Enter;
+                }
                 self.buf_mut().insert_str(&tail);
-                self.completion = None;
-            }
-            // Enter still inserts a newline; it just closes the popup first so it
-            // can't silently swap in a half-typed name.
-            KeyCode::Enter => {
-                self.completion = None;
-                return false;
             }
             _ => return false,
         }

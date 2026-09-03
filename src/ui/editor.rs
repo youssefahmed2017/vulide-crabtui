@@ -26,6 +26,7 @@ pub fn render(
     show_numbers: bool,
     search: &[(Position, Position)],
     search_current: usize,
+    diagnostics: &[(Position, Position)],
     area: Rect,
 ) -> Option<(u16, u16)> {
     if area.width == 0 || area.height == 0 {
@@ -83,6 +84,7 @@ pub fn render(
             cursor_bracket,
             search,
             search_current,
+            diagnostics,
             theme,
             &tokenizer,
         ));
@@ -137,6 +139,7 @@ fn styled_text(
     cursor_bracket: Option<Position>,
     search: &[(Position, Position)],
     search_current: usize,
+    diagnostics: &[(Position, Position)],
     theme: &Theme,
     tokenizer: &VulpinTokenizer,
 ) -> Vec<Span<'static>> {
@@ -178,6 +181,12 @@ fn styled_text(
         }
         if Some(here) == bracket_match || Some(here) == cursor_bracket {
             style = style.fg(theme.match_bracket).add_modifier(Modifier::BOLD);
+        }
+        // Undefined `$name` — Vulpin would read it as None.
+        if diagnostics.iter().any(|(a, b)| *a <= here && here < *b) {
+            style = style
+                .fg(theme.output_err)
+                .add_modifier(Modifier::UNDERLINED);
         }
         // Search hits sit on top: the current match inverted, the rest tinted.
         if let Some((mi, _)) = search

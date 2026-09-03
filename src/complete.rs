@@ -1,8 +1,9 @@
 //! The autocomplete popup.
 //!
-//! It is non-modal: Up/Down move the selection, Tab accepts, Esc dismisses, and
-//! any other key edits as normal and refreshes the list. Enter keeps its
-//! newline (it just closes the popup first).
+//! It is non-modal: Up/Down move the selection, Enter or Tab accepts, Esc
+//! dismisses, and any other key edits as normal and refreshes the list. When the
+//! selected row has nothing left to insert (a command reminder, a fully-typed
+//! method) Enter still makes a newline.
 //!
 //! Four contexts, tried in this order:
 //!   1. **`$name`** — variables (every `$ref` + leading `name =` target) and

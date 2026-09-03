@@ -38,7 +38,7 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+←/→", "word-wise motion"),
             (
                 "autocomplete",
-                "$vars · functions · .U/.L/.S/.T/.C · command hints — Tab accepts",
+                "$vars · functions · .U/.L/.S/.T/.C · command hints — Enter/Tab accepts",
             ),
         ],
     ),
@@ -73,6 +73,10 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+P", "command palette"),
             ("Ctrl+T", "theme picker (live preview)"),
+            (
+                "F7",
+                "structure outline — ↑↓ select, Enter jumps to the line",
+            ),
             ("F1  /  Ctrl+H", "this help"),
             ("Esc", "dismiss popup / overlay / leave the output panel"),
             ("Ctrl+Q / Ctrl+C", "quit"),

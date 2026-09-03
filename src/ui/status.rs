@@ -44,12 +44,26 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         format!(" {} ", app.status)
     };
 
-    let used = btn_label.chars().count() + left.chars().count() + pos.chars().count();
+    let warn = match app.diagnostics.len() {
+        0 => String::new(),
+        1 => " ⚠ 1 undefined var ".to_string(),
+        n => format!(" ⚠ {n} undefined vars "),
+    };
+    let warn_style = Style::default()
+        .fg(theme.statusbar_bg)
+        .bg(theme.output_err)
+        .add_modifier(Modifier::BOLD);
+
+    let used = btn_label.chars().count()
+        + left.chars().count()
+        + warn.chars().count()
+        + pos.chars().count();
     let gap = (area.width as usize).saturating_sub(used);
     let line = Line::from(vec![
         Span::styled(btn_label, btn_style),
         Span::styled(left, accent),
         Span::styled(" ".repeat(gap), base),
+        Span::styled(warn, warn_style),
         Span::styled(pos, base),
     ]);
 
