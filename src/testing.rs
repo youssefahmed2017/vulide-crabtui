@@ -90,16 +90,38 @@ impl Harness {
         self.key_mods(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
 
-    /// A left-button press at `(col, row)`.
-    pub fn click(&mut self, col: u16, row: u16) -> &mut Self {
-        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    fn mouse(
+        &mut self,
+        kind: ratatui::crossterm::event::MouseEventKind,
+        col: u16,
+        row: u16,
+    ) -> &mut Self {
+        use ratatui::crossterm::event::MouseEvent;
         self.app.handle_event(AppEvent::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
+            kind,
             column: col,
             row,
             modifiers: KeyModifiers::NONE,
         }));
         self.draw()
+    }
+
+    /// A left-button press at `(col, row)`.
+    pub fn click(&mut self, col: u16, row: u16) -> &mut Self {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        self.mouse(MouseEventKind::Down(MouseButton::Left), col, row)
+    }
+
+    pub fn mouse_move(&mut self, col: u16, row: u16) -> &mut Self {
+        self.mouse(ratatui::crossterm::event::MouseEventKind::Moved, col, row)
+    }
+
+    /// A full press → drag → release from `(x0,y0)` to `(x1,y1)`.
+    pub fn drag(&mut self, x0: u16, y0: u16, x1: u16, y1: u16) -> &mut Self {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        self.mouse(MouseEventKind::Down(MouseButton::Left), x0, y0);
+        self.mouse(MouseEventKind::Drag(MouseButton::Left), x1, y1);
+        self.mouse(MouseEventKind::Up(MouseButton::Left), x1, y1)
     }
 
     pub fn type_str(&mut self, s: &str) -> &mut Self {
@@ -694,5 +716,63 @@ mod tests {
             crate::app::Focus::Editor,
             "keyboard should be back in the editor after the run"
         );
+    }
+
+    #[test]
+    fn splitter_drag_resizes_the_panel() {
+        let mut h = Harness::new(80, 30);
+        h.app.start_run_argv(vec!["sleep".into(), "30".into()]);
+        h.pump();
+        let start_h = h.app.panel_rect.expect("panel").height;
+        let sp = h.app.splitter_rect.expect("splitter rect");
+
+        // drag the splitter up by 5 rows → panel grows
+        h.drag(sp.x + sp.width / 2, sp.y, sp.x + sp.width / 2, sp.y - 5);
+        let new_h = h.app.panel_rect.expect("panel").height;
+        assert!(new_h > start_h, "panel {start_h} -> {new_h}");
+        assert!(!h.app.dragging_splitter, "drag released");
+
+        h.app.stop_run();
+    }
+
+    #[test]
+    fn panel_close_button_closes_the_output() {
+        let mut h = Harness::new(70, 20);
+        h.app.start_run_argv(vec!["sleep".into(), "30".into()]);
+        h.pump();
+        let x = h.app.panel_close_rect.expect("close rect");
+        h.click(x.x, x.y);
+        assert!(h.app.run.is_none(), "output panel closed");
+        assert_eq!(h.app.focus, crate::app::Focus::Editor);
+    }
+
+    #[test]
+    fn clicking_a_tab_switches_and_its_x_closes_it() {
+        let mut h = Harness::new(70, 14);
+        h.ctrl('n');
+        h.ctrl('n'); // three tabs, active = 2
+        assert_eq!(h.app.buffers.len(), 3);
+        assert_eq!(h.app.active, 2);
+
+        let first = h.app.tab_hits[0];
+        h.click(first.rect.x + 1, first.rect.y);
+        assert_eq!(h.app.active, 0, "clicked tab 0");
+
+        // close the (now) middle tab via its ✕
+        let mid = h.app.tab_hits[1];
+        h.click(mid.close.x, mid.close.y);
+        assert_eq!(h.app.buffers.len(), 2);
+    }
+
+    #[test]
+    fn hovering_a_tab_marks_it() {
+        let mut h = Harness::new(70, 14);
+        h.ctrl('n'); // two tabs
+        assert_eq!(h.app.hovered_tab, None);
+        let t0 = h.app.tab_hits[0];
+        h.mouse_move(t0.rect.x + 1, t0.rect.y);
+        assert_eq!(h.app.hovered_tab, Some(0));
+        h.mouse_move(0, 10); // move away (into the editor)
+        assert_eq!(h.app.hovered_tab, None);
     }
 }

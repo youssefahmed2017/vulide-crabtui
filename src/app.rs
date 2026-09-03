@@ -26,6 +26,7 @@ use crate::ui;
 use crate::ui::help::HelpOutcome;
 use crate::ui::overlay::{Overlay, PathPrompt, PromptKind, PromptOutcome, expand_tilde};
 use crate::ui::palette::{Cmd, Entry, Palette, PaletteOutcome};
+use crate::ui::tabs::TabHit;
 use crate::ui::theme_picker::{ThemePicker, ThemePickerOutcome};
 
 /// Input poll granularity for the reader thread (not an output-latency bound).
@@ -54,12 +55,29 @@ pub struct App {
     /// this session (until explicitly closed).
     pub run: Option<RunConsole>,
     pub focus: Focus,
-    /// Screen rect of the status-bar ▶/■ button, refreshed every draw.
+    /// User-dragged output-panel height (rows); `None` = the default third.
+    pub panel_height: Option<u16>,
+    pub dragging_splitter: bool,
+
+    // ---- mouse hit rects, refreshed every draw ----
+    /// Screen rect of the status-bar ▶/■ button.
     pub run_button: Option<Rect>,
-    /// Screen rect of the output panel (when shown), refreshed every draw.
+    pub editor_rect: Rect,
+    pub status_rect: Rect,
+    pub splitter_rect: Option<Rect>,
+    /// Screen rect of the output panel (when shown).
     pub panel_rect: Option<Rect>,
+    /// Screen rect of the panel's close-✕ button.
+    pub panel_close_rect: Option<Rect>,
+    /// Per-tab hit rects (index, tab, close-✕).
+    pub tab_hits: Vec<TabHit>,
     /// Screen rect of the open overlay's box (for click-away dismiss).
     pub overlay_rect: Option<Rect>,
+
+    // ---- hover state (mouse-move driven) ----
+    pub hovered_tab: Option<usize>,
+    pub hover_splitter: bool,
+    pub hover_panel_close: bool,
     /// Channel the run console's reader threads push onto; set while `run()` owns
     /// the loop. `None` outside it (e.g. in tests, unless injected).
     run_tx: Option<Sender<AppEvent>>,
@@ -99,9 +117,19 @@ impl App {
             completion: None,
             run: None,
             focus: Focus::Editor,
+            panel_height: None,
+            dragging_splitter: false,
             run_button: None,
+            editor_rect: Rect::default(),
+            status_rect: Rect::default(),
+            splitter_rect: None,
             panel_rect: None,
+            panel_close_rect: None,
+            tab_hits: Vec::new(),
             overlay_rect: None,
+            hovered_tab: None,
+            hover_splitter: false,
+            hover_panel_close: false,
             run_tx: None,
             should_quit: false,
         };
@@ -214,16 +242,26 @@ impl App {
     }
 
     fn close_tab(&mut self, discard: bool) {
-        if self.buf().is_dirty() && !discard {
+        self.close_tab_at(self.active, discard);
+    }
+
+    fn close_tab_at(&mut self, index: usize, discard: bool) {
+        if index >= self.buffers.len() {
+            return;
+        }
+        if self.buffers[index].is_dirty() && !discard {
             self.set_status("unsaved changes — save (Ctrl+S) or use palette › Close Tab (discard)");
             return;
         }
-        self.buffers.remove(self.active);
+        self.buffers.remove(index);
         if self.buffers.is_empty() {
             self.buffers.push(Buffer::new());
             self.apply_config();
         }
-        self.active = self.active.min(self.buffers.len() - 1);
+        // Keep `active` pointing at the same buffer (or the nearest one).
+        if self.active > index || self.active >= self.buffers.len() {
+            self.active = self.active.saturating_sub(1).min(self.buffers.len() - 1);
+        }
         self.completion = None;
         self.set_status("closed tab");
     }
@@ -494,37 +532,128 @@ impl App {
         };
     }
 
-    fn handle_mouse(&mut self, ev: MouseEvent) {
-        // Only left-clicks do anything; motion / wheel / release are ignored.
-        if !matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
-            return;
-        }
+    /// Returns whether the screen needs a redraw (so idle mouse motion is free).
+    fn handle_mouse(&mut self, ev: MouseEvent) -> bool {
         let (col, row) = (ev.column, ev.row);
+        match ev.kind {
+            MouseEventKind::Moved => return self.update_hover(col, row),
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.dragging_splitter {
+                    self.resize_panel_to(row);
+                    return true;
+                }
+                return false;
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let was = self.dragging_splitter;
+                self.dragging_splitter = false;
+                return was;
+            }
+            MouseEventKind::ScrollUp if self.focus == Focus::Output => {
+                if let Some(r) = &mut self.run {
+                    r.scroll_up(3);
+                }
+                return true;
+            }
+            MouseEventKind::ScrollDown if self.focus == Focus::Output => {
+                if let Some(r) = &mut self.run {
+                    r.scroll_down(3);
+                }
+                return true;
+            }
+            MouseEventKind::Down(MouseButton::Left) => {}
+            _ => return false,
+        }
+
+        // ---- left click ----
 
         // A click outside an open overlay dismisses it (like Esc).
         if self.overlay.is_open() {
-            let inside = self.overlay_rect.is_some_and(|r| hit(r, col, row));
-            if !inside {
+            if !self.overlay_rect.is_some_and(|r| hit(r, col, row)) {
                 self.dismiss_overlay();
             }
-            return;
+            return true;
         }
 
-        // The ▶/■ button.
+        // Grab the splitter.
+        if self.splitter_rect.is_some_and(|r| hit(r, col, row)) {
+            self.dragging_splitter = true;
+            return true;
+        }
+
+        // The panel's ✕ (checked before the panel body so the corner works).
+        if self.panel_close_rect.is_some_and(|r| hit(r, col, row)) {
+            self.close_output();
+            return true;
+        }
+
+        // The status-bar ▶/■ button.
         if self.run_button.is_some_and(|r| hit(r, col, row)) {
             self.toggle_run();
-            return;
+            return true;
+        }
+
+        // Tabs: a click on a tab switches to it; on its ✕ closes it.
+        let tab_action = self.tab_hits.iter().find_map(|t| {
+            if hit(t.close, col, row) {
+                Some((t.index, true))
+            } else if hit(t.rect, col, row) {
+                Some((t.index, false))
+            } else {
+                None
+            }
+        });
+        if let Some((index, close)) = tab_action {
+            if close {
+                self.close_tab_at(index, false);
+            } else {
+                self.active = index;
+                self.completion = None;
+            }
+            self.focus = Focus::Editor;
+            return true;
         }
 
         // Otherwise a click just moves focus between the two panes, so the
         // keyboard always goes where you're looking.
-        if self.panel_rect.is_some_and(|r| hit(r, col, row)) {
-            if self.run.is_some() {
-                self.focus = Focus::Output;
-            }
-        } else {
+        if self.panel_rect.is_some_and(|r| hit(r, col, row)) && self.run.is_some() {
+            self.focus = Focus::Output;
+        } else if self.editor_rect.height > 0 && hit(self.editor_rect, col, row) {
             self.focus = Focus::Editor;
         }
+        true
+    }
+
+    /// Recompute hover flags; returns whether any of them changed.
+    fn update_hover(&mut self, col: u16, row: u16) -> bool {
+        let tab = self
+            .tab_hits
+            .iter()
+            .find(|t| hit(t.rect, col, row))
+            .map(|t| t.index);
+        let splitter = self.splitter_rect.is_some_and(|r| hit(r, col, row));
+        let close = self.panel_close_rect.is_some_and(|r| hit(r, col, row));
+        let changed = tab != self.hovered_tab
+            || splitter != self.hover_splitter
+            || close != self.hover_panel_close;
+        self.hovered_tab = tab;
+        self.hover_splitter = splitter;
+        self.hover_panel_close = close;
+        changed
+    }
+
+    /// Drag the editor/panel divider: the splitter row follows the cursor,
+    /// keeping the editor at least [`ui::MIN_EDITOR_ROWS`] tall.
+    fn resize_panel_to(&mut self, row: u16) {
+        let status_y = self.status_rect.y;
+        let editor_top = self.editor_rect.y;
+        if status_y == 0 {
+            return;
+        }
+        // panel occupies (row+1 ..= status_y-1)  →  height = status_y - row - 1
+        let want = status_y.saturating_sub(row).saturating_sub(1);
+        let max = status_y.saturating_sub(editor_top + crate::ui::MIN_EDITOR_ROWS + 1);
+        self.panel_height = Some(want.clamp(3, max.max(3)));
     }
 
     /// Close the overlay the way its own Esc would (reverting a theme preview).
@@ -575,24 +704,28 @@ impl App {
             let Some(first) = events.next()? else {
                 break; // every sender dropped — shouldn't happen, but exit cleanly
             };
-            self.handle_event(first);
-            // Coalesce a burst (e.g. a flood of output lines) into one redraw.
+            let mut dirty = self.handle_event(first);
+            // Coalesce a burst (e.g. a flood of output lines, or mouse motion)
+            // into a single redraw — and skip it entirely if nothing changed.
             while let Some(ev) = events.try_next() {
                 if self.should_quit {
                     break;
                 }
-                self.handle_event(ev);
+                dirty |= self.handle_event(ev);
             }
-            terminal.draw(|f| ui::draw(f, self))?;
+            if dirty {
+                terminal.draw(|f| ui::draw(f, self))?;
+            }
         }
         self.run_tx = None;
         Ok(())
     }
 
-    pub fn handle_event(&mut self, ev: AppEvent) {
+    /// Dispatch one event; returns whether the screen needs to be redrawn.
+    pub fn handle_event(&mut self, ev: AppEvent) -> bool {
         match ev {
             AppEvent::Key(key) => self.handle_key(key),
-            AppEvent::Mouse(m) => self.handle_mouse(m),
+            AppEvent::Mouse(m) => return self.handle_mouse(m),
             AppEvent::Paste(text) if self.focus == Focus::Output => {
                 if let Some(r) = &mut self.run {
                     r.input.insert_str(&text);
@@ -639,8 +772,10 @@ impl App {
                 self.set_status("terminal input closed");
                 self.should_quit = true;
             }
-            AppEvent::Resize(..) | AppEvent::Tick => {}
+            AppEvent::Resize(..) => {}
+            AppEvent::Tick => return false,
         }
+        true
     }
 
     fn clear_status(&mut self) {

@@ -56,6 +56,17 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Q / Ctrl+C", "quit"),
         ],
     ),
+    (
+        "Mouse",
+        &[
+            ("click tab / its ✕", "switch to it / close it"),
+            ("drag the ╍╍ divider", "resize the output panel"),
+            ("panel ✕", "close the output panel"),
+            ("click a pane", "move focus there"),
+            ("click outside a popup", "dismiss it"),
+            ("Shift + drag", "the terminal's own text selection"),
+        ],
+    ),
 ];
 
 pub enum HelpOutcome {

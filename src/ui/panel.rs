@@ -11,9 +11,17 @@ use crate::event::OutputStream;
 use crate::run::RunConsole;
 use crate::theme::Theme;
 
-pub fn render(f: &mut Frame, console: &RunConsole, theme: &Theme, focused: bool, area: Rect) {
+/// Renders the panel; returns the screen rect of the close-`✕` button.
+pub fn render(
+    f: &mut Frame,
+    console: &RunConsole,
+    theme: &Theme,
+    focused: bool,
+    hover_close: bool,
+    area: Rect,
+) -> Rect {
     if area.height == 0 || area.width == 0 {
-        return;
+        return Rect::default();
     }
     let bg = Style::default().bg(theme.output_bg).fg(theme.output_fg);
     f.render_widget(Paragraph::new("").style(bg), area);
@@ -55,29 +63,49 @@ pub fn render(f: &mut Frame, console: &RunConsole, theme: &Theme, focused: bool,
             Modifier::empty()
         });
     let hint = if focused { "  Esc → editor" } else { "" };
-    let right = format!("{state}{hint} ");
+    let close = " ✕ ";
+    let right = format!("{state}{hint}{close}");
     let title = truncate(
         &format!("▶ {}", console.command),
         area.width.saturating_sub(right.chars().count() as u16 + 2) as usize,
     );
     let pad =
         (area.width as usize).saturating_sub(title.chars().count() + right.chars().count() + 1);
+    let close_style = Style::default()
+        .bg(theme.output_bg)
+        .fg(if hover_close {
+            theme.output_err
+        } else {
+            theme.output_fg
+        })
+        .add_modifier(if hover_close {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
     let title_line = Line::from(vec![
         Span::styled(format!(" {title}"), title_style),
         Span::styled(" ".repeat(pad), bg),
         Span::styled(state.clone(), state_style),
-        Span::styled(format!("{hint} "), title_style),
+        Span::styled(hint.to_string(), title_style),
+        Span::styled(close, close_style),
     ]);
     f.render_widget(
         Paragraph::new(title_line).style(bg),
         Rect { height: 1, ..area },
     );
+    let close_rect = Rect {
+        x: area.x + area.width.saturating_sub(close.chars().count() as u16),
+        y: area.y,
+        width: close.chars().count() as u16,
+        height: 1,
+    };
 
     // ---- output body ----
     let running_input = console.is_running() && focused;
     let body_h = area.height.saturating_sub(1 + running_input as u16) as usize;
     if body_h == 0 {
-        return;
+        return close_rect;
     }
     let total = console.rows.len();
     // `scroll` counts lines up from the bottom; never scroll the last line above
@@ -141,6 +169,8 @@ pub fn render(f: &mut Frame, console: &RunConsole, theme: &Theme, focused: bool,
             f.set_cursor_position(TermPos::new(cx, y));
         }
     }
+
+    close_rect
 }
 
 fn truncate(s: &str, max: usize) -> String {
