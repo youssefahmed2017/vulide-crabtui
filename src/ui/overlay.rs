@@ -12,6 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
+use super::help::Help;
 use super::palette::Palette;
 use super::theme_picker::ThemePicker;
 use crate::buffer::Buffer;
@@ -22,6 +23,7 @@ pub enum Overlay {
     Prompt(Box<PathPrompt>),
     Palette(Box<Palette>),
     ThemePicker(Box<ThemePicker>),
+    Help(Box<Help>),
 }
 
 impl Overlay {

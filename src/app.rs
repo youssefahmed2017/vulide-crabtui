@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui::layout::Rect;
 
 use crate::buffer::Buffer;
 use crate::complete::Completion;
@@ -20,6 +23,7 @@ use crate::event::{AppEvent, EventSource};
 use crate::run::{self, RunConsole};
 use crate::theme::Theme;
 use crate::ui;
+use crate::ui::help::HelpOutcome;
 use crate::ui::overlay::{Overlay, PathPrompt, PromptKind, PromptOutcome, expand_tilde};
 use crate::ui::palette::{Cmd, Entry, Palette, PaletteOutcome};
 use crate::ui::theme_picker::{ThemePicker, ThemePickerOutcome};
@@ -50,6 +54,8 @@ pub struct App {
     /// this session (until explicitly closed).
     pub run: Option<RunConsole>,
     pub focus: Focus,
+    /// Screen rect of the status-bar ▶/■ button, refreshed every draw.
+    pub run_button: Option<Rect>,
     /// Channel the run console's reader threads push onto; set while `run()` owns
     /// the loop. `None` outside it (e.g. in tests, unless injected).
     run_tx: Option<Sender<AppEvent>>,
@@ -89,6 +95,7 @@ impl App {
             completion: None,
             run: None,
             focus: Focus::Editor,
+            run_button: None,
             run_tx: None,
             should_quit: false,
         };
@@ -256,6 +263,7 @@ impl App {
             Entry::new("Run File (F5)", Cmd::RunFile),
             Entry::new("Stop Run", Cmd::StopRun),
             Entry::new("Close Output Panel", Cmd::CloseOutput),
+            Entry::new("Help — Keys & Shortcuts (F1)", Cmd::Help),
             Entry::new("Reload Config", Cmd::ReloadConfig),
             Entry::new("Quit", Cmd::Quit),
         ];
@@ -334,6 +342,7 @@ impl App {
             Cmd::RunFile => self.start_run(),
             Cmd::StopRun => self.stop_run(),
             Cmd::CloseOutput => self.close_output(),
+            Cmd::Help => self.open_help(),
         }
     }
 
@@ -431,6 +440,43 @@ impl App {
         };
     }
 
+    /// Label for the status-bar button; `is_running` also decides its colour.
+    pub fn run_button_label(&self) -> &'static str {
+        if self.run.as_ref().is_some_and(RunConsole::is_running) {
+            " ■ Stop "
+        } else {
+            " ▶ Run "
+        }
+    }
+
+    /// The ▶/■ button: run when idle, stop when a run is in progress.
+    fn toggle_run(&mut self) {
+        if self.run.as_ref().is_some_and(RunConsole::is_running) {
+            self.stop_run();
+        } else {
+            self.start_run();
+        }
+    }
+
+    fn open_help(&mut self) {
+        self.overlay = Overlay::Help(Box::default());
+    }
+
+    fn handle_mouse(&mut self, ev: MouseEvent) {
+        if self.overlay.is_open() {
+            return;
+        }
+        if let MouseEventKind::Down(MouseButton::Left) = ev.kind
+            && let Some(r) = self.run_button
+            && ev.column >= r.x
+            && ev.column < r.x + r.width
+            && ev.row >= r.y
+            && ev.row < r.y + r.height
+        {
+            self.toggle_run();
+        }
+    }
+
     #[cfg(test)]
     pub fn inject_run_tx(&mut self, tx: Sender<AppEvent>) {
         self.run_tx = Some(tx);
@@ -487,6 +533,7 @@ impl App {
     pub fn handle_event(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::Key(key) => self.handle_key(key),
+            AppEvent::Mouse(m) => self.handle_mouse(m),
             AppEvent::Paste(text) if self.focus == Focus::Output => {
                 if let Some(r) = &mut self.run {
                     r.input.insert_str(&text);
@@ -552,6 +599,12 @@ impl App {
                         self.overlay = Overlay::None;
                         self.run_command(cmd);
                     }
+                }
+                true
+            }
+            Overlay::Help(h) => {
+                if let HelpOutcome::Close = h.handle_key(key) {
+                    self.overlay = Overlay::None;
                 }
                 true
             }
@@ -629,10 +682,11 @@ impl App {
         if self.handle_overlay_key(key) {
             return;
         }
-        // Run controls work from either pane.
+        // These work from either pane.
         match key.code {
             KeyCode::F(5) => return self.start_run(),
             KeyCode::F(6) => return self.toggle_output_focus(),
+            KeyCode::F(1) => return self.open_help(),
             _ => {}
         }
         if self.focus == Focus::Output {
@@ -756,6 +810,12 @@ impl App {
                 }
                 KeyCode::Char('p') => {
                     self.open_palette();
+                    return;
+                }
+                // Many terminals send Ctrl+H as Backspace; where it arrives as a
+                // real Ctrl+H it opens the help card (F1 is the reliable key).
+                KeyCode::Char('h') => {
+                    self.open_help();
                     return;
                 }
                 KeyCode::Char('o') => {

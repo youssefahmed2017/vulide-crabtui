@@ -41,6 +41,7 @@ pub enum Cmd {
     RunFile,
     StopRun,
     CloseOutput,
+    Help,
 }
 
 pub struct Entry {

@@ -5,6 +5,7 @@
 //! Phase 5.
 
 pub mod editor;
+pub mod help;
 pub mod overlay;
 pub mod palette;
 pub mod panel;
@@ -72,6 +73,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         );
     }
 
+    // Record the run/stop button's hit rect (leftmost cells of the status bar).
+    let btn_w = (app.run_button_label().chars().count() as u16).min(status_area.width);
+    app.run_button = Some(ratatui::layout::Rect {
+        x: status_area.x,
+        y: status_area.y,
+        width: btn_w,
+        height: 1,
+    });
     status::render(f, app, status_area);
 
     // Autocomplete popup floats over the editor, anchored to the cursor. It is
@@ -89,6 +98,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Overlay::Prompt(prompt) => overlay::render_prompt(f, prompt, &app.theme, area),
         Overlay::Palette(palette) => palette::render(f, palette, &app.theme, area),
         Overlay::ThemePicker(picker) => theme_picker::render(f, picker, &app.theme, area),
+        Overlay::Help(h) => help::render(f, h, &app.theme, area),
         Overlay::None => {}
     }
 }

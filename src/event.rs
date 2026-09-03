@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{self, Event as CtEvent, KeyEvent, KeyEventKind, MouseEvent};
 
 /// Which child stream a line of output came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub enum OutputStream {
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Paste(String),
     Resize(u16, u16),
     Tick,
@@ -94,6 +95,7 @@ fn input_loop(poll_rate: Duration, tx: Sender<AppEvent>) {
         let mapped = match ev {
             CtEvent::Key(k) if k.kind == KeyEventKind::Press => Some(AppEvent::Key(k)),
             CtEvent::Key(_) => None,
+            CtEvent::Mouse(m) => Some(AppEvent::Mouse(m)),
             CtEvent::Paste(s) => Some(AppEvent::Paste(s)),
             CtEvent::Resize(w, h) => Some(AppEvent::Resize(w, h)),
             _ => None,

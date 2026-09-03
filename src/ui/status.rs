@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -14,6 +14,21 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .fg(theme.statusbar_fg)
         .bg(theme.statusbar_bg);
     let accent = Style::default().fg(theme.accent).bg(theme.statusbar_bg);
+
+    // A clickable run / stop button occupies the far left (see `App.run_button`).
+    let running = app
+        .run
+        .as_ref()
+        .is_some_and(crate::run::RunConsole::is_running);
+    let btn_label = app.run_button_label();
+    let btn_style = Style::default()
+        .fg(theme.statusbar_bg)
+        .bg(if running {
+            theme.output_err
+        } else {
+            theme.output_ok
+        })
+        .add_modifier(Modifier::BOLD);
 
     let cursor = app.buf().cursor();
     let tab_of = if app.buffers.len() > 1 {
@@ -29,9 +44,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         format!(" {} ", app.status)
     };
 
-    let used = left.chars().count() + pos.chars().count();
+    let used = btn_label.chars().count() + left.chars().count() + pos.chars().count();
     let gap = (area.width as usize).saturating_sub(used);
     let line = Line::from(vec![
+        Span::styled(btn_label, btn_style),
         Span::styled(left, accent),
         Span::styled(" ".repeat(gap), base),
         Span::styled(pos, base),

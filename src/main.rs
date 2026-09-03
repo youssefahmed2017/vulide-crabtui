@@ -25,6 +25,8 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::execute;
 
 fn main() -> Result<()> {
     // A TUI needs a real terminal on both ends. IDE "Run" panels, pipes, and
@@ -43,6 +45,10 @@ fn main() -> Result<()> {
     let arg = std::env::args().nth(1);
 
     let mut terminal = ratatui::init();
+    // Mouse reporting powers the status-bar ▶ button. Hold Shift for the
+    // terminal's own text selection while it's on.
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+
     let mut app = app::App::new();
     if let Some(arg) = arg
         && let Err(e) = app.open_path(PathBuf::from(arg))
@@ -51,6 +57,7 @@ fn main() -> Result<()> {
     }
 
     let result = app.run(&mut terminal);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }

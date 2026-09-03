@@ -90,6 +90,18 @@ impl Harness {
         self.key_mods(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
 
+    /// A left-button press at `(col, row)`.
+    pub fn click(&mut self, col: u16, row: u16) -> &mut Self {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        self.app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+        self.draw()
+    }
+
     pub fn type_str(&mut self, s: &str) -> &mut Self {
         for ch in s.chars() {
             let code = if ch == '\n' {
@@ -558,5 +570,71 @@ mod tests {
 
         std::fs::remove_file(&stub).ok();
         std::fs::remove_file(&src).ok();
+    }
+
+    #[test]
+    fn run_button_is_visible_and_clickable() {
+        let dir = std::env::temp_dir();
+        let stub = dir.join(format!("vulide_btn_stub_{}.sh", std::process::id()));
+        std::fs::write(&stub, "#!/bin/sh\necho clicked-run\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let src = dir.join(format!("vulide_btn_prog_{}.vul", std::process::id()));
+        std::fs::write(&src, "G\"x\"\n").unwrap();
+
+        let mut h = Harness::new(70, 16);
+        h.app.config.vulpin_path = stub.to_string_lossy().into_owned();
+        h.app.open_path(src.clone()).unwrap();
+        h.draw();
+
+        assert!(h.contains("▶ Run"), "button missing:\n{}", h.screen());
+        let btn = h.app.run_button.expect("button rect recorded");
+        h.click(btn.x + 2, btn.y); // click on the "▶"
+        wait_for_exit(&mut h);
+        assert!(
+            h.contains("clicked-run"),
+            "click didn't run:\n{}",
+            h.screen()
+        );
+
+        std::fs::remove_file(&stub).ok();
+        std::fs::remove_file(&src).ok();
+    }
+
+    #[test]
+    fn f1_opens_help_and_esc_closes() {
+        let mut h = Harness::new(90, 44);
+        h.key(KeyCode::F(1));
+        assert!(h.contains("Keys & Shortcuts"));
+        assert!(h.contains("save (Save As if untitled)"));
+        assert!(h.contains("command palette"));
+        assert!(h.contains("run the current file"));
+        h.key(KeyCode::Esc);
+        assert!(!h.app.overlay.is_open());
+
+        // short terminal: scrolls instead of overflowing
+        let mut h = Harness::new(90, 14);
+        h.key(KeyCode::F(1));
+        assert!(h.contains("Keys & Shortcuts"));
+        for _ in 0..40 {
+            h.key(KeyCode::Down);
+        }
+        assert!(h.contains("this help"), "scroll reached the last section");
+    }
+
+    #[test]
+    fn palette_has_a_help_entry() {
+        let mut h = Harness::new(80, 24);
+        h.ctrl('p');
+        h.type_str("help");
+        h.key(KeyCode::Enter);
+        assert!(matches!(
+            h.app.overlay,
+            crate::ui::overlay::Overlay::Help(_)
+        ));
+        assert!(h.contains("Keys & Shortcuts"));
     }
 }
