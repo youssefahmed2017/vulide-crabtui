@@ -8,6 +8,7 @@ pub mod overlay;
 pub mod palette;
 pub mod status;
 pub mod tabs;
+pub mod theme_picker;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -59,6 +60,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match &app.overlay {
         Overlay::Prompt(prompt) => overlay::render_prompt(f, prompt, &app.theme, area),
         Overlay::Palette(palette) => palette::render(f, palette, &app.theme, area),
+        Overlay::ThemePicker(picker) => theme_picker::render(f, picker, &app.theme, area),
         Overlay::None => {}
     }
 }

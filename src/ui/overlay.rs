@@ -1,9 +1,9 @@
 //! The modal overlay layer.
 //!
 //! Members: the **path prompt** (Save As / Open File — `Ctrl+S` on an untitled
-//! buffer, `Ctrl+O`) and the **command palette** (`Ctrl+P`, in `palette.rs`).
-//! While an overlay is open it captures all key input; `centered_rect` is the
-//! shared geometry helper.
+//! buffer, `Ctrl+O`), the **command palette** (`Ctrl+P`, in `palette.rs`), and
+//! the **theme picker** (`Ctrl+T`, in `theme_picker.rs`). While an overlay is
+//! open it captures all key input; `centered_rect` is the shared geometry helper.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 use super::palette::Palette;
+use super::theme_picker::ThemePicker;
 use crate::buffer::Buffer;
 use crate::theme::Theme;
 
@@ -20,6 +21,7 @@ pub enum Overlay {
     None,
     Prompt(Box<PathPrompt>),
     Palette(Box<Palette>),
+    ThemePicker(Box<ThemePicker>),
 }
 
 impl Overlay {

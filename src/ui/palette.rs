@@ -31,7 +31,7 @@ pub enum Cmd {
     CloseTabDiscard,
     NextTab,
     PrevTab,
-    NextTheme,
+    ChooseTheme,
     SetTheme(String),
     ToggleLineNumbers,
     ToggleWordWrap,

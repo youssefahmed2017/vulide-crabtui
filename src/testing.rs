@@ -133,20 +133,47 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_cycles_theme_and_recolours() {
-        use ratatui::crossterm::event::KeyModifiers;
+    fn ctrl_t_theme_picker_previews_commits_and_reverts() {
         use ratatui::style::Color;
 
-        let mut h = Harness::with_text("G\"hi\"", 40, 6);
-        let g_before = h.cell(4, 0).fg; // the 'G', coloured by theme.command
+        let mut h = Harness::with_text("G\"hi\"", 44, 12);
+        let g_mocha = h.cell(4, 0).fg; // the 'G', coloured by theme.command
         assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
 
-        h.key_mods(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        h.ctrl('t');
+        assert!(h.contains("Theme"));
+        assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)"); // not changed yet
+
+        // Down previews the next theme live on the editor behind the overlay.
+        h.key(KeyCode::Down);
         assert_eq!(h.app.theme.name, "Light (Catppuccin Latte)");
-        assert!(h.contains("theme: Light"));
-        // Latte's `command` colour differs from Mocha's, so the 'G' recoloured
-        assert_ne!(h.cell(4, 0).fg, g_before);
+        assert_ne!(h.cell(4, 0).fg, g_mocha, "'G' recoloured on preview");
         assert_ne!(h.cell(4, 0).fg, Color::Reset);
+
+        // Esc reverts to the theme that was active when the picker opened.
+        h.key(KeyCode::Esc);
+        assert!(!h.app.overlay.is_open());
+        assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
+        assert_eq!(h.cell(4, 0).fg, g_mocha);
+
+        // This time keep the previewed theme.
+        h.ctrl('t');
+        h.key(KeyCode::Down);
+        h.key(KeyCode::Enter);
+        assert!(!h.app.overlay.is_open());
+        assert_eq!(h.app.theme.name, "Light (Catppuccin Latte)");
+        assert_eq!(h.app.config.theme, "Light (Catppuccin Latte)");
+        assert!(h.contains("theme: Light"));
+    }
+
+    #[test]
+    fn default_theme_is_dark() {
+        let h = Harness::new(40, 6);
+        assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
+        assert_eq!(
+            crate::theme::Theme::default().name,
+            "Dark (Catppuccin Mocha)"
+        );
     }
 
     #[test]
@@ -334,11 +361,11 @@ mod tests {
     }
 
     #[test]
-    fn palette_cycles_theme() {
+    fn palette_sets_theme_directly() {
         let mut h = Harness::new(80, 16);
         assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
         h.ctrl('p');
-        h.type_str("theme nord");
+        h.type_str("theme nord"); // matches the "Theme: Nord" entry
         h.key(KeyCode::Enter);
         assert_eq!(h.app.theme.name, "Nord");
         assert_eq!(h.app.config.theme, "Nord");

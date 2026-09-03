@@ -20,6 +20,7 @@ use crate::theme::Theme;
 use crate::ui;
 use crate::ui::overlay::{Overlay, PathPrompt, PromptKind, PromptOutcome, expand_tilde};
 use crate::ui::palette::{Cmd, Entry, Palette, PaletteOutcome};
+use crate::ui::theme_picker::{ThemePicker, ThemePickerOutcome};
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -107,16 +108,21 @@ impl App {
 
     // ---- theme ----
 
-    /// Advance to the next bundled theme (Ctrl+T).
-    pub fn cycle_theme(&mut self) {
-        let next = (self.theme_idx + 1) % self.themes.len();
-        self.set_theme(next);
-        self.set_status(format!("theme: {}", self.theme.name));
+    /// Open the theme picker (Ctrl+T), selection starting on the active theme.
+    pub fn open_theme_picker(&mut self) {
+        let names = self.themes.iter().map(|t| t.name.clone()).collect();
+        self.overlay = Overlay::ThemePicker(Box::new(ThemePicker::new(names, self.theme_idx)));
     }
 
-    fn set_theme(&mut self, idx: usize) {
+    /// Swap the active theme without touching the config (live preview).
+    fn preview_theme(&mut self, idx: usize) {
         self.theme_idx = idx.min(self.themes.len() - 1);
         self.theme = self.themes[self.theme_idx].clone();
+    }
+
+    /// Preview + persist to config.
+    fn set_theme(&mut self, idx: usize) {
+        self.preview_theme(idx);
         self.config.theme = self.theme.name.clone();
         self.save_config();
     }
@@ -223,7 +229,7 @@ impl App {
             Entry::new("Close Tab (discard changes)", Cmd::CloseTabDiscard),
             Entry::new("Next Tab", Cmd::NextTab),
             Entry::new("Previous Tab", Cmd::PrevTab),
-            Entry::new("Cycle Theme", Cmd::NextTheme),
+            Entry::new("Choose Theme…", Cmd::ChooseTheme),
             Entry::new("Toggle Line Numbers", Cmd::ToggleLineNumbers),
             Entry::new("Toggle Word Wrap", Cmd::ToggleWordWrap),
             Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
@@ -264,7 +270,7 @@ impl App {
             Cmd::CloseTabDiscard => self.close_tab(true),
             Cmd::NextTab => self.next_tab(),
             Cmd::PrevTab => self.prev_tab(),
-            Cmd::NextTheme => self.cycle_theme(),
+            Cmd::ChooseTheme => self.open_theme_picker(),
             Cmd::SetTheme(name) => self.set_theme_by_name(&name),
             Cmd::ToggleLineNumbers => {
                 self.config.show_line_numbers = !self.config.show_line_numbers;
@@ -375,6 +381,25 @@ impl App {
                     PaletteOutcome::Run(cmd) => {
                         self.overlay = Overlay::None;
                         self.run_command(cmd);
+                    }
+                }
+                true
+            }
+            Overlay::ThemePicker(picker) => {
+                match picker.handle_key(key) {
+                    ThemePickerOutcome::Preview(i) => self.preview_theme(i),
+                    ThemePickerOutcome::Commit(i) => {
+                        self.set_theme(i);
+                        self.overlay = Overlay::None;
+                        self.set_status(format!("theme: {}", self.theme.name));
+                    }
+                    ThemePickerOutcome::Cancel => {
+                        let original = match &self.overlay {
+                            Overlay::ThemePicker(p) => p.original,
+                            _ => self.theme_idx,
+                        };
+                        self.preview_theme(original);
+                        self.overlay = Overlay::None;
                     }
                 }
                 true
@@ -520,7 +545,7 @@ impl App {
                     return;
                 }
                 KeyCode::Char('t') => {
-                    self.cycle_theme();
+                    self.open_theme_picker();
                     return;
                 }
                 KeyCode::Char('s') => {
