@@ -259,6 +259,47 @@ mod tests {
     }
 
     #[test]
+    fn autocomplete_string_methods_and_functions() {
+        let mut h = Harness::with_text("F shout(msg)\n  G $msg.U\n~\n", 50, 14);
+        h.app
+            .buf_mut()
+            .set_cursor(Position { line: 3, col: 0 }, false);
+        h.draw();
+
+        // function name completes with its signature shown
+        h.type_str("G $sh");
+        assert!(h.app.completion.is_some());
+        assert!(h.contains("shout"), "fn candidate:\n{}", h.screen());
+        assert!(h.contains("fn(msg)"), "signature shown:\n{}", h.screen());
+        h.key(KeyCode::Tab);
+        assert_eq!(h.app.buf().line_text(3), "G $shout");
+
+        // `.` offers the string methods
+        h.type_str(".");
+        assert!(h.app.completion.is_some());
+        assert!(h.contains("UPPERCASE"), "methods:\n{}", h.screen());
+        h.type_str("L");
+        assert_eq!(h.app.completion.as_ref().unwrap().items.len(), 1);
+        h.key(KeyCode::Tab);
+        assert_eq!(h.app.buf().line_text(3), "G $shout.L");
+    }
+
+    #[test]
+    fn autocomplete_command_hint() {
+        let mut h = Harness::with_text("", 50, 10);
+        h.type_str("K");
+        assert!(h.app.completion.is_some(), "hint on a lone command letter");
+        assert!(
+            h.contains("read a line of input"),
+            "screen:\n{}",
+            h.screen()
+        );
+        // adding an expression ends the hint
+        h.type_str(" $x");
+        assert!(h.app.completion.is_none());
+    }
+
+    #[test]
     fn autocomplete_dismisses_on_esc_without_editing() {
         let mut h = Harness::with_text("value = 1\n", 40, 10);
         h.app

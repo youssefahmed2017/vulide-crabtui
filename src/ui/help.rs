@@ -36,7 +36,25 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
             ),
             ("Tab / Shift+Tab", "indent / dedent"),
             ("Ctrl+←/→", "word-wise motion"),
-            ("$name …", "autocomplete popup — Tab accepts, Esc dismisses"),
+            (
+                "autocomplete",
+                "$vars · functions · .U/.L/.S/.T/.C · command hints — Tab accepts",
+            ),
+        ],
+    ),
+    (
+        "Vulpin commands",
+        &[
+            ("G / P", "print — with / without a newline"),
+            ("K  Q  X", "read input · quit · raise error"),
+            ("? : ;", "if · else · end if"),
+            ("@ &   O", "while · end while   ·   for i start end [step]"),
+            ("F ~ R", "function · end function · return"),
+            ("L  J", "label · jump to label"),
+            ("W V N Z", "switch · case · default · end switch"),
+            ("T C Y", "try · catch · end try"),
+            ("E  A  S", "assign · in-place arithmetic · string replace"),
+            ("U   $x", "import module   ·   $x dereferences a variable"),
         ],
     ),
     (
