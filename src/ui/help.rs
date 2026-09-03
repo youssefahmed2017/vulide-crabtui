@@ -115,7 +115,8 @@ fn lines(theme: &Theme) -> Vec<Line<'static>> {
     out
 }
 
-pub fn render(f: &mut Frame, help: &Help, theme: &Theme, area: Rect) {
+/// Returns the outer rect it drew into (for click-away hit-testing).
+pub fn render(f: &mut Frame, help: &Help, theme: &Theme, area: Rect) -> Rect {
     let all = lines(theme);
     let rect = centered_rect(76, (all.len() as u16 + 4).min(area.height), area);
     f.render_widget(Clear, rect);
@@ -144,4 +145,5 @@ pub fn render(f: &mut Frame, help: &Help, theme: &Theme, area: Rect) {
         .take(inner.height as usize)
         .collect();
     f.render_widget(Paragraph::new(shown).style(panel), inner);
+    rect
 }

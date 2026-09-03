@@ -63,6 +63,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         editor_area,
     );
 
+    app.panel_rect = panel_area;
     if let (Some(panel_area), Some(console)) = (panel_area, &app.run) {
         panel::render(
             f,
@@ -93,12 +94,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         complete::render_popup(f, c, pos, &app.theme, editor_area);
     }
 
-    // Overlays draw last, over everything, and own the cursor while open.
-    match &app.overlay {
-        Overlay::Prompt(prompt) => overlay::render_prompt(f, prompt, &app.theme, area),
-        Overlay::Palette(palette) => palette::render(f, palette, &app.theme, area),
-        Overlay::ThemePicker(picker) => theme_picker::render(f, picker, &app.theme, area),
-        Overlay::Help(h) => help::render(f, h, &app.theme, area),
-        Overlay::None => {}
-    }
+    // Overlays draw last, over everything, and own the cursor while open. Record
+    // the outer rect so a click outside it can dismiss the overlay.
+    app.overlay_rect = match &app.overlay {
+        Overlay::Prompt(prompt) => Some(overlay::render_prompt(f, prompt, &app.theme, area)),
+        Overlay::Palette(palette) => Some(palette::render(f, palette, &app.theme, area)),
+        Overlay::ThemePicker(picker) => Some(theme_picker::render(f, picker, &app.theme, area)),
+        Overlay::Help(h) => Some(help::render(f, h, &app.theme, area)),
+        Overlay::None => None,
+    };
 }

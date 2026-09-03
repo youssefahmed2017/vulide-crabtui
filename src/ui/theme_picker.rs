@@ -56,7 +56,8 @@ impl ThemePicker {
     }
 }
 
-pub fn render(f: &mut Frame, picker: &ThemePicker, theme: &Theme, area: Rect) {
+/// Returns the outer rect it drew into (for click-away hit-testing).
+pub fn render(f: &mut Frame, picker: &ThemePicker, theme: &Theme, area: Rect) -> Rect {
     let rect = centered_rect(44, picker.names.len() as u16 + 4, area);
     f.render_widget(Clear, rect);
 
@@ -99,4 +100,5 @@ pub fn render(f: &mut Frame, picker: &ThemePicker, theme: &Theme, area: Rect) {
     )));
 
     f.render_widget(Paragraph::new(lines).style(panel), inner);
+    rect
 }

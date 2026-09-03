@@ -56,6 +56,10 @@ pub struct App {
     pub focus: Focus,
     /// Screen rect of the status-bar ▶/■ button, refreshed every draw.
     pub run_button: Option<Rect>,
+    /// Screen rect of the output panel (when shown), refreshed every draw.
+    pub panel_rect: Option<Rect>,
+    /// Screen rect of the open overlay's box (for click-away dismiss).
+    pub overlay_rect: Option<Rect>,
     /// Channel the run console's reader threads push onto; set while `run()` owns
     /// the loop. `None` outside it (e.g. in tests, unless injected).
     run_tx: Option<Sender<AppEvent>>,
@@ -96,6 +100,8 @@ impl App {
             run: None,
             focus: Focus::Editor,
             run_button: None,
+            panel_rect: None,
+            overlay_rect: None,
             run_tx: None,
             should_quit: false,
         };
@@ -260,6 +266,10 @@ impl App {
             Entry::new("Toggle Line Numbers", Cmd::ToggleLineNumbers),
             Entry::new("Toggle Word Wrap", Cmd::ToggleWordWrap),
             Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
+            Entry::new(
+                "Toggle Mouse (for terminal text selection)",
+                Cmd::ToggleMouse,
+            ),
             Entry::new("Run File (F5)", Cmd::RunFile),
             Entry::new("Stop Run", Cmd::StopRun),
             Entry::new("Close Output Panel", Cmd::CloseOutput),
@@ -323,6 +333,15 @@ impl App {
                 self.set_status(format!(
                     "auto-close brackets: {}",
                     on_off(self.config.auto_close_brackets)
+                ));
+            }
+            Cmd::ToggleMouse => {
+                self.config.mouse = !self.config.mouse;
+                self.save_config();
+                self.apply_mouse_capture();
+                self.set_status(format!(
+                    "mouse: {} (Shift bypasses for selection)",
+                    on_off(self.config.mouse)
                 ));
             }
             Cmd::ReloadConfig => {
@@ -462,19 +481,59 @@ impl App {
         self.overlay = Overlay::Help(Box::default());
     }
 
-    fn handle_mouse(&mut self, ev: MouseEvent) {
-        if self.overlay.is_open() {
+    /// Push `config.mouse` to the terminal (live toggle). No-op under tests.
+    fn apply_mouse_capture(&self) {
+        if cfg!(test) {
             return;
         }
-        if let MouseEventKind::Down(MouseButton::Left) = ev.kind
-            && let Some(r) = self.run_button
-            && ev.column >= r.x
-            && ev.column < r.x + r.width
-            && ev.row >= r.y
-            && ev.row < r.y + r.height
-        {
-            self.toggle_run();
+        use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+        let _ = if self.config.mouse {
+            ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)
+        } else {
+            ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)
+        };
+    }
+
+    fn handle_mouse(&mut self, ev: MouseEvent) {
+        // Only left-clicks do anything; motion / wheel / release are ignored.
+        if !matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return;
         }
+        let (col, row) = (ev.column, ev.row);
+
+        // A click outside an open overlay dismisses it (like Esc).
+        if self.overlay.is_open() {
+            let inside = self.overlay_rect.is_some_and(|r| hit(r, col, row));
+            if !inside {
+                self.dismiss_overlay();
+            }
+            return;
+        }
+
+        // The ▶/■ button.
+        if self.run_button.is_some_and(|r| hit(r, col, row)) {
+            self.toggle_run();
+            return;
+        }
+
+        // Otherwise a click just moves focus between the two panes, so the
+        // keyboard always goes where you're looking.
+        if self.panel_rect.is_some_and(|r| hit(r, col, row)) {
+            if self.run.is_some() {
+                self.focus = Focus::Output;
+            }
+        } else {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Close the overlay the way its own Esc would (reverting a theme preview).
+    fn dismiss_overlay(&mut self) {
+        if let Overlay::ThemePicker(p) = &self.overlay {
+            let original = p.original;
+            self.preview_theme(original);
+        }
+        self.overlay = Overlay::None;
     }
 
     #[cfg(test)]
@@ -567,6 +626,13 @@ impl App {
                         (_, Some(c)) => format!("run finished (exit {c})"),
                         (_, None) => "run finished".to_string(),
                     });
+                    // The program is done — hand the keyboard back to the editor
+                    // unless the user is scrolled up reading the output.
+                    if self.focus == Focus::Output
+                        && self.run.as_ref().is_some_and(|r| r.scroll == 0)
+                    {
+                        self.focus = Focus::Editor;
+                    }
                 }
             }
             AppEvent::InputClosed => {
@@ -925,6 +991,11 @@ pub fn app_with_file(path: &Path) -> Result<App> {
 
 fn on_off(b: bool) -> &'static str {
     if b { "on" } else { "off" }
+}
+
+/// Is the cell `(col, row)` inside `r`?
+fn hit(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
 }
 
 /// Prefill for the path field: the current working directory with a trailing

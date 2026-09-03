@@ -637,4 +637,62 @@ mod tests {
         ));
         assert!(h.contains("Keys & Shortcuts"));
     }
+
+    #[test]
+    fn click_outside_an_overlay_dismisses_it() {
+        let mut h = Harness::new(90, 30);
+        h.key(KeyCode::F(1));
+        assert!(h.app.overlay.is_open());
+        let r = h.app.overlay_rect.expect("overlay rect recorded");
+
+        // a click inside the box does not close it
+        h.click(r.x + 1, r.y + 1);
+        assert!(h.app.overlay.is_open());
+
+        // a click in the corner (outside) does
+        h.click(0, 0);
+        assert!(!h.app.overlay.is_open());
+    }
+
+    #[test]
+    fn click_outside_theme_picker_reverts_preview() {
+        let mut h = Harness::new(90, 30);
+        h.ctrl('t');
+        h.key(KeyCode::Down); // preview Latte
+        assert_eq!(h.app.theme.name, "Light (Catppuccin Latte)");
+        h.click(0, 0); // click away
+        assert!(!h.app.overlay.is_open());
+        assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
+    }
+
+    #[test]
+    fn clicking_between_panes_moves_focus() {
+        let mut h = Harness::new(70, 20);
+        h.app.start_run_argv(vec!["sleep".into(), "30".into()]);
+        h.pump();
+        assert_eq!(h.app.focus, crate::app::Focus::Output);
+
+        let editor_row = 2;
+        h.click(5, editor_row);
+        assert_eq!(h.app.focus, crate::app::Focus::Editor, "click in editor");
+
+        let pr = h.app.panel_rect.expect("panel rect");
+        h.click(pr.x + 2, pr.y + 1);
+        assert_eq!(h.app.focus, crate::app::Focus::Output, "click in panel");
+
+        h.app.stop_run();
+    }
+
+    #[test]
+    fn focus_returns_to_editor_when_the_run_finishes() {
+        let mut h = Harness::new(70, 20);
+        h.app.start_run_argv(vec!["printf".into(), "done\n".into()]);
+        assert_eq!(h.app.focus, crate::app::Focus::Output);
+        wait_for_exit(&mut h);
+        assert_eq!(
+            h.app.focus,
+            crate::app::Focus::Editor,
+            "keyboard should be back in the editor after the run"
+        );
+    }
 }

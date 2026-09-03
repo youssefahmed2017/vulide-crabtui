@@ -22,6 +22,9 @@ pub struct Config {
     pub auto_indent: bool,
     pub show_autocomplete: bool,
     pub show_line_numbers: bool,
+    /// Capture the mouse so the status-bar ▶ button and click-to-focus work.
+    /// Turn off to get the terminal's own text selection back everywhere.
+    pub mouse: bool,
     pub auto_save: bool,
     pub recent_files: Vec<PathBuf>,
     pub recent_files_limit: usize,
@@ -39,6 +42,7 @@ impl Default for Config {
             auto_indent: true,
             show_autocomplete: true,
             show_line_numbers: true,
+            mouse: true,
             auto_save: false,
             recent_files: Vec::new(),
             recent_files_limit: 10,

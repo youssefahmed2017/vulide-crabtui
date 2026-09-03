@@ -54,16 +54,19 @@ pub fn render(f: &mut Frame, console: &RunConsole, theme: &Theme, focused: bool,
         } else {
             Modifier::empty()
         });
+    let hint = if focused { "  Esc → editor" } else { "" };
+    let right = format!("{state}{hint} ");
     let title = truncate(
         &format!("▶ {}", console.command),
-        area.width.saturating_sub(state.len() as u16 + 3) as usize,
+        area.width.saturating_sub(right.chars().count() as u16 + 2) as usize,
     );
     let pad =
-        (area.width as usize).saturating_sub(title.chars().count() + state.chars().count() + 2);
+        (area.width as usize).saturating_sub(title.chars().count() + right.chars().count() + 1);
     let title_line = Line::from(vec![
         Span::styled(format!(" {title}"), title_style),
         Span::styled(" ".repeat(pad), bg),
-        Span::styled(format!("{state} "), state_style),
+        Span::styled(state.clone(), state_style),
+        Span::styled(format!("{hint} "), title_style),
     ]);
     f.render_widget(
         Paragraph::new(title_line).style(bg),

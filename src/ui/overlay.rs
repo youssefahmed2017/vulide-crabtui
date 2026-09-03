@@ -155,7 +155,8 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-pub fn render_prompt(f: &mut Frame, prompt: &PathPrompt, theme: &Theme, area: Rect) {
+/// Returns the outer rect it drew into (for click-away hit-testing).
+pub fn render_prompt(f: &mut Frame, prompt: &PathPrompt, theme: &Theme, area: Rect) -> Rect {
     let extra = if prompt.error.is_some() { 2 } else { 0 };
     let rect = centered_rect(64, 7 + extra, area);
     f.render_widget(Clear, rect);
@@ -213,4 +214,5 @@ pub fn render_prompt(f: &mut Frame, prompt: &PathPrompt, theme: &Theme, area: Re
     if cx < inner.x + inner.width {
         f.set_cursor_position(TermPos::new(cx, inner.y));
     }
+    rect
 }

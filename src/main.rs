@@ -45,11 +45,14 @@ fn main() -> Result<()> {
     let arg = std::env::args().nth(1);
 
     let mut terminal = ratatui::init();
-    // Mouse reporting powers the status-bar ▶ button. Hold Shift for the
-    // terminal's own text selection while it's on.
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
-
     let mut app = app::App::new();
+    // Mouse reporting powers the status-bar ▶ button and click-to-focus. Hold
+    // Shift for the terminal's own text selection while it's on; disable it
+    // entirely with `mouse = false` in the config or the palette.
+    if app.config.mouse {
+        let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    }
+
     if let Some(arg) = arg
         && let Err(e) = app.open_path(PathBuf::from(arg))
     {

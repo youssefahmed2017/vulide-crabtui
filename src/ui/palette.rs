@@ -36,6 +36,7 @@ pub enum Cmd {
     ToggleLineNumbers,
     ToggleWordWrap,
     ToggleAutoClose,
+    ToggleMouse,
     ReloadConfig,
     OpenRecent(PathBuf),
     RunFile,
@@ -168,7 +169,8 @@ fn subseq_score(needle: &str, haystack: &str) -> Option<i32> {
     Some(score)
 }
 
-pub fn render(f: &mut Frame, p: &Palette, theme: &Theme, area: Rect) {
+/// Returns the outer rect it drew into (for click-away hit-testing).
+pub fn render(f: &mut Frame, p: &Palette, theme: &Theme, area: Rect) -> Rect {
     let rows = p.filtered.len().clamp(1, MAX_ROWS) as u16;
     let rect = centered_rect(72, rows + 4, area);
     f.render_widget(Clear, rect);
@@ -219,6 +221,7 @@ pub fn render(f: &mut Frame, p: &Palette, theme: &Theme, area: Rect) {
         inner.x + 2 + query.chars().count() as u16,
         inner.y,
     ));
+    rect
 }
 
 #[cfg(test)]
