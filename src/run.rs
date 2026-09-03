@@ -30,11 +30,15 @@ pub fn resolve_interpreter(config_path: &str) -> Option<Vec<String>> {
             return Some(vec![p.to_string_lossy().into_owned()]);
         }
     }
-    if let Some(p) = which("vulpin") {
-        return Some(vec![p.to_string_lossy().into_owned()]);
+    for name in ["vulpin", "vulpin.exe"] {
+        if let Some(p) = which(name) {
+            return Some(vec![p.to_string_lossy().into_owned()]);
+        }
     }
-    if which("python3").is_some() {
-        return Some(vec!["python3".into(), "-m".into(), "vulpin".into()]);
+    for py in ["python3", "python", "py"] {
+        if which(py).is_some() {
+            return Some(vec![py.into(), "-m".into(), "vulpin".into()]);
+        }
     }
     None
 }
