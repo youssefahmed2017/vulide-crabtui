@@ -764,6 +764,116 @@ mod tests {
         assert_eq!(h.app.buffers.len(), 2);
     }
 
+    // ---- Phase 5: find / replace ----
+
+    #[test]
+    fn find_bar_highlights_and_navigates() {
+        let mut h = Harness::with_text("alpha beta alpha gamma alpha", 60, 12);
+        h.ctrl('f');
+        assert!(h.app.search.is_some());
+        h.type_str("alpha");
+        assert_eq!(h.app.search_matches.len(), 3);
+        assert!(h.contains("1/3"), "counter shown:\n{}", h.screen());
+        // incremental: cursor jumped to (the end of) the first match
+        assert_eq!(h.app.buf().cursor(), Position { line: 0, col: 5 });
+
+        h.key(KeyCode::Enter); // next
+        assert_eq!(h.app.search_idx, 1);
+        assert_eq!(h.app.buf().cursor(), Position { line: 0, col: 16 });
+
+        h.key(KeyCode::Enter);
+        h.key(KeyCode::Enter); // wraps 2 -> 0
+        assert_eq!(h.app.search_idx, 0);
+
+        h.key_mods(KeyCode::Enter, KeyModifiers::SHIFT); // prev, wraps 0 -> 2
+        assert_eq!(h.app.search_idx, 2);
+
+        h.key(KeyCode::Esc);
+        assert!(h.app.search.is_none());
+        assert!(h.app.search_matches.is_empty());
+    }
+
+    #[test]
+    fn find_is_case_insensitive_until_toggled() {
+        let mut h = Harness::with_text("Foo foo FOO", 50, 10);
+        h.ctrl('f');
+        h.type_str("foo");
+        assert_eq!(h.app.search_matches.len(), 3);
+        h.key_mods(KeyCode::Char('c'), KeyModifiers::ALT); // Alt+C
+        assert_eq!(h.app.search_matches.len(), 1);
+        assert!(h.contains("case: on"));
+    }
+
+    #[test]
+    fn replace_one_then_replace_all() {
+        let mut h = Harness::with_text("foo foo foo", 60, 12);
+        h.ctrl('f');
+        h.type_str("foo");
+        assert_eq!(h.app.search_matches.len(), 3);
+
+        h.key(KeyCode::Tab); // -> Replace field
+        h.type_str("bar");
+        h.ctrl('r'); // replace current + advance
+        assert_eq!(h.app.buf().line_text(0), "bar foo foo");
+        assert_eq!(h.app.search_matches.len(), 2);
+
+        h.key_mods(KeyCode::Char('a'), KeyModifiers::ALT); // Alt+A replace all
+        assert_eq!(h.app.buf().line_text(0), "bar bar bar");
+        assert!(h.contains("replaced 2"));
+
+        // one undo step per operation
+        h.key(KeyCode::Esc);
+        h.ctrl('z');
+        assert_eq!(h.app.buf().line_text(0), "bar foo foo");
+        h.ctrl('z');
+        assert_eq!(h.app.buf().line_text(0), "foo foo foo");
+    }
+
+    #[test]
+    fn find_seeds_from_selection() {
+        let mut h = Harness::with_text("needle here and needle there", 60, 12);
+        h.key(KeyCode::End);
+        for _ in 0..5 {
+            h.key_mods(KeyCode::Left, KeyModifiers::SHIFT); // select "there"
+        }
+        h.ctrl('f');
+        assert_eq!(h.app.search.as_ref().unwrap().query(), "there");
+    }
+
+    #[test]
+    fn clicking_another_tab_dismisses_the_find_bar() {
+        // The bar captures the keyboard, so a tab switch only reaches here via
+        // the mouse or the palette — either way its per-buffer matches must go.
+        let mut h = Harness::new(70, 14);
+        h.type_str("alpha alpha");
+        h.ctrl('n');
+        h.type_str("alpha");
+        h.ctrl('f');
+        h.type_str("alpha");
+        assert!(h.app.search.is_some());
+
+        let first = h.app.tab_hits[0];
+        h.click(first.rect.x + 1, first.rect.y);
+        assert_eq!(h.app.active, 0);
+        assert!(h.app.search.is_none(), "find bar dropped on tab switch");
+        assert!(h.app.search_matches.is_empty());
+    }
+
+    #[test]
+    fn find_bar_shares_the_screen_with_the_output_panel() {
+        let mut h = Harness::new(80, 24);
+        h.app.start_run_argv(vec!["sleep".into(), "30".into()]);
+        h.pump();
+        h.app.focus = crate::app::Focus::Editor;
+        h.ctrl('f');
+        h.draw();
+        // editor keeps at least the minimum height with tabs off + panel + bar
+        assert!(h.app.editor_rect.height >= crate::ui::MIN_EDITOR_ROWS);
+        assert!(h.app.panel_rect.is_some());
+        assert!(h.app.search_rect.is_some());
+        h.app.stop_run();
+    }
+
     #[test]
     fn hovering_a_tab_marks_it() {
         let mut h = Harness::new(70, 14);

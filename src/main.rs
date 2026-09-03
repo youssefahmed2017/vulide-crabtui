@@ -14,6 +14,7 @@ mod complete;
 mod config;
 mod event;
 mod run;
+mod search;
 mod syntax;
 mod theme;
 mod ui;

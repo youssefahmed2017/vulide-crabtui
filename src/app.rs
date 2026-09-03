@@ -21,6 +21,7 @@ use crate::complete::Completion;
 use crate::config::Config;
 use crate::event::{AppEvent, EventSource};
 use crate::run::{self, RunConsole};
+use crate::search::{Field, Search, SearchAction};
 use crate::theme::Theme;
 use crate::ui;
 use crate::ui::help::HelpOutcome;
@@ -59,6 +60,17 @@ pub struct App {
     pub panel_height: Option<u16>,
     pub dragging_splitter: bool,
 
+    // ---- find / replace ----
+    /// The find/replace bar, present while it is open.
+    pub search: Option<Search>,
+    /// Every match of the current query, ordered; drives editor highlighting.
+    pub search_matches: Vec<(crate::buffer::Position, crate::buffer::Position)>,
+    /// Index into `search_matches` of the current (emphasised) match.
+    pub search_idx: usize,
+    /// Cursor position when the bar opened — incremental find anchors here so
+    /// typing more of the query doesn't walk the selection forward.
+    search_origin: crate::buffer::Position,
+
     // ---- mouse hit rects, refreshed every draw ----
     /// Screen rect of the status-bar ▶/■ button.
     pub run_button: Option<Rect>,
@@ -73,6 +85,8 @@ pub struct App {
     pub tab_hits: Vec<TabHit>,
     /// Screen rect of the open overlay's box (for click-away dismiss).
     pub overlay_rect: Option<Rect>,
+    /// Screen rect of the find/replace bar (when open).
+    pub search_rect: Option<Rect>,
 
     // ---- hover state (mouse-move driven) ----
     pub hovered_tab: Option<usize>,
@@ -119,6 +133,10 @@ impl App {
             focus: Focus::Editor,
             panel_height: None,
             dragging_splitter: false,
+            search: None,
+            search_matches: Vec::new(),
+            search_idx: 0,
+            search_origin: crate::buffer::Position::default(),
             run_button: None,
             editor_rect: Rect::default(),
             status_rect: Rect::default(),
@@ -127,6 +145,7 @@ impl App {
             panel_close_rect: None,
             tab_hits: Vec::new(),
             overlay_rect: None,
+            search_rect: None,
             hovered_tab: None,
             hover_splitter: false,
             hover_panel_close: false,
@@ -226,6 +245,7 @@ impl App {
         }
         self.apply_config();
         self.completion = None;
+        self.dismiss_search_on_switch();
         self.set_status(format!("opened {}", self.buf().title()));
 
         self.config.push_recent(&canonical);
@@ -238,6 +258,7 @@ impl App {
         self.active = self.buffers.len() - 1;
         self.apply_config();
         self.completion = None;
+        self.dismiss_search_on_switch();
         self.set_status("new buffer");
     }
 
@@ -263,17 +284,29 @@ impl App {
             self.active = self.active.saturating_sub(1).min(self.buffers.len() - 1);
         }
         self.completion = None;
+        self.dismiss_search_on_switch();
         self.set_status("closed tab");
     }
 
     fn next_tab(&mut self) {
         self.active = (self.active + 1) % self.buffers.len();
         self.completion = None;
+        self.dismiss_search_on_switch();
     }
 
     fn prev_tab(&mut self) {
         self.active = (self.active + self.buffers.len() - 1) % self.buffers.len();
         self.completion = None;
+        self.dismiss_search_on_switch();
+    }
+
+    /// The find bar's match list is per-buffer — drop it when the active buffer
+    /// changes (tab switch/close/open) so stale highlights can't linger.
+    fn dismiss_search_on_switch(&mut self) {
+        if self.search.take().is_some() {
+            self.search_matches.clear();
+            self.search_idx = 0;
+        }
     }
 
     fn save_active(&mut self) {
@@ -295,6 +328,8 @@ impl App {
             Entry::new("Save", Cmd::Save),
             Entry::new("Save As…", Cmd::SaveAs),
             Entry::new("Open File…", Cmd::OpenFile),
+            Entry::new("Find…", Cmd::Find),
+            Entry::new("Replace…", Cmd::Replace),
             Entry::new("New Tab", Cmd::NewTab),
             Entry::new("Close Tab", Cmd::CloseTab),
             Entry::new("Close Tab (discard changes)", Cmd::CloseTabDiscard),
@@ -399,6 +434,13 @@ impl App {
             Cmd::RunFile => self.start_run(),
             Cmd::StopRun => self.stop_run(),
             Cmd::CloseOutput => self.close_output(),
+            Cmd::Find => self.open_search(),
+            Cmd::Replace => {
+                self.open_search();
+                if let Some(s) = &mut self.search {
+                    s.field = Field::Replace;
+                }
+            }
             Cmd::Help => self.open_help(),
         }
     }
@@ -519,6 +561,135 @@ impl App {
         self.overlay = Overlay::Help(Box::default());
     }
 
+    // ---- find / replace ----
+
+    /// `Ctrl+F`: open the find/replace bar, seeded from the selection.
+    fn open_search(&mut self) {
+        let seed = self
+            .buf()
+            .selection_text()
+            .filter(|s| !s.is_empty() && !s.contains('\n'))
+            .unwrap_or_default();
+        self.completion = None;
+        self.search_origin = self.buf().cursor();
+        self.search = Some(Search::new(&seed));
+        self.recompute_matches();
+        self.reset_match_to_origin();
+        self.focus_current_match();
+        self.set_status("find: type to search · Esc closes");
+    }
+
+    fn close_search(&mut self) {
+        self.search = None;
+        self.search_matches.clear();
+        self.search_idx = 0;
+        self.clear_status();
+    }
+
+    /// Refresh the match list for the current query, keeping `search_idx` in
+    /// range (callers decide whether to re-anchor it).
+    fn recompute_matches(&mut self) {
+        let Some(s) = &self.search else {
+            self.search_matches.clear();
+            return;
+        };
+        let (q, cs) = (s.query(), s.case_sensitive);
+        self.search_matches = crate::search::find_all(self.buf(), &q, cs);
+        if self.search_idx >= self.search_matches.len() {
+            self.search_idx = 0;
+        }
+    }
+
+    /// Point `search_idx` at the first match at or after where the bar opened.
+    fn reset_match_to_origin(&mut self) {
+        self.search_idx = self
+            .search_matches
+            .iter()
+            .position(|(start, _)| *start >= self.search_origin)
+            .unwrap_or(0);
+    }
+
+    /// Select the current match so the editor scrolls it into view.
+    fn focus_current_match(&mut self) {
+        if let Some(&(start, end)) = self.search_matches.get(self.search_idx) {
+            self.buf_mut().set_cursor(start, false);
+            self.buf_mut().set_cursor(end, true);
+        }
+    }
+
+    fn step_match(&mut self, forward: bool) {
+        let n = self.search_matches.len();
+        if n == 0 {
+            self.set_status("no matches");
+            return;
+        }
+        self.search_idx = if forward {
+            (self.search_idx + 1) % n
+        } else {
+            (self.search_idx + n - 1) % n
+        };
+        self.focus_current_match();
+        self.set_status(format!("match {}/{}", self.search_idx + 1, n));
+    }
+
+    fn replace_one(&mut self) {
+        let Some(&(start, end)) = self.search_matches.get(self.search_idx) else {
+            self.set_status("no match to replace");
+            return;
+        };
+        let with = self
+            .search
+            .as_ref()
+            .map(Search::replacement)
+            .unwrap_or_default();
+        self.buf_mut().replace_ranges(&[(start, end)], &with);
+        // The list shifts; keeping search_idx lands us on what was the next match.
+        self.recompute_matches();
+        self.focus_current_match();
+        let n = self.search_matches.len();
+        self.set_status(match n {
+            0 => "replaced — no matches left".to_string(),
+            1 => "replaced — 1 match left".to_string(),
+            _ => format!("replaced — {n} matches left"),
+        });
+    }
+
+    fn replace_all(&mut self) {
+        if self.search_matches.is_empty() {
+            self.set_status("no matches to replace");
+            return;
+        }
+        let ranges = self.search_matches.clone();
+        let with = self
+            .search
+            .as_ref()
+            .map(Search::replacement)
+            .unwrap_or_default();
+        let count = self.buf_mut().replace_ranges(&ranges, &with);
+        self.recompute_matches();
+        self.set_status(format!("replaced {count}"));
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        let action = match &mut self.search {
+            Some(s) => s.handle_key(key),
+            None => return,
+        };
+        match action {
+            SearchAction::Stay => {}
+            SearchAction::Requery => {
+                self.recompute_matches();
+                self.reset_match_to_origin();
+                self.focus_current_match();
+            }
+            SearchAction::Close => self.close_search(),
+            SearchAction::Next => self.step_match(true),
+            SearchAction::Prev => self.step_match(false),
+            SearchAction::ReplaceOne => self.replace_one(),
+            SearchAction::ReplaceAll => self.replace_all(),
+        }
+    }
+
     /// Push `config.mouse` to the terminal (live toggle). No-op under tests.
     fn apply_mouse_capture(&self) {
         if cfg!(test) {
@@ -609,6 +780,7 @@ impl App {
             } else {
                 self.active = index;
                 self.completion = None;
+                self.dismiss_search_on_switch();
             }
             self.focus = Focus::Editor;
             return true;
@@ -645,14 +817,16 @@ impl App {
     /// Drag the editor/panel divider: the splitter row follows the cursor,
     /// keeping the editor at least [`ui::MIN_EDITOR_ROWS`] tall.
     fn resize_panel_to(&mut self, row: u16) {
-        let status_y = self.status_rect.y;
+        // The panel's bottom edge is whatever sits directly below it — the
+        // search bar if it's open, otherwise the status bar.
+        let bottom = self.search_rect.map(|r| r.y).unwrap_or(self.status_rect.y);
         let editor_top = self.editor_rect.y;
-        if status_y == 0 {
+        if bottom == 0 {
             return;
         }
-        // panel occupies (row+1 ..= status_y-1)  →  height = status_y - row - 1
-        let want = status_y.saturating_sub(row).saturating_sub(1);
-        let max = status_y.saturating_sub(editor_top + crate::ui::MIN_EDITOR_ROWS + 1);
+        // panel occupies (row+1 ..= bottom-1)  →  height = bottom - row - 1
+        let want = bottom.saturating_sub(row).saturating_sub(1);
+        let max = bottom.saturating_sub(editor_top + crate::ui::MIN_EDITOR_ROWS + 1);
         self.panel_height = Some(want.clamp(3, max.max(3)));
     }
 
@@ -894,6 +1068,10 @@ impl App {
             self.handle_output_key(key);
             return;
         }
+        if self.search.is_some() {
+            self.handle_search_key(key);
+            return;
+        }
         if self.completion.is_some() && self.handle_completion_key(key) {
             return;
         }
@@ -1017,6 +1195,10 @@ impl App {
                 // real Ctrl+H it opens the help card (F1 is the reliable key).
                 KeyCode::Char('h') => {
                     self.open_help();
+                    return;
+                }
+                KeyCode::Char('f') => {
+                    self.open_search();
                     return;
                 }
                 KeyCode::Char('o') => {

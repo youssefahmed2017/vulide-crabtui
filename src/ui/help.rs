@@ -30,6 +30,10 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+Z / Ctrl+Y", "undo / redo"),
             ("Ctrl+A", "select all"),
+            (
+                "Ctrl+F",
+                "find / replace bar (^R replace, Alt+A all, Esc close)",
+            ),
             ("Tab / Shift+Tab", "indent / dedent"),
             ("Ctrl+←/→", "word-wise motion"),
             ("$name …", "autocomplete popup — Tab accepts, Esc dismisses"),

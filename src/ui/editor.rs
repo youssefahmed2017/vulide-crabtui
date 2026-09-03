@@ -18,11 +18,14 @@ const GUTTER_MIN: u16 = 4;
 
 /// Renders the editor and returns the cursor's screen cell, when it is visible
 /// (the autocomplete popup anchors to it).
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     buf: &mut Buffer,
     theme: &Theme,
     show_numbers: bool,
+    search: &[(Position, Position)],
+    search_current: usize,
     area: Rect,
 ) -> Option<(u16, u16)> {
     if area.width == 0 || area.height == 0 {
@@ -78,6 +81,8 @@ pub fn render(
             selection,
             bracket_match,
             cursor_bracket,
+            search,
+            search_current,
             theme,
             &tokenizer,
         ));
@@ -130,6 +135,8 @@ fn styled_text(
     selection: Option<(Position, Position)>,
     bracket_match: Option<Position>,
     cursor_bracket: Option<Position>,
+    search: &[(Position, Position)],
+    search_current: usize,
     theme: &Theme,
     tokenizer: &VulpinTokenizer,
 ) -> Vec<Span<'static>> {
@@ -171,6 +178,21 @@ fn styled_text(
         }
         if Some(here) == bracket_match || Some(here) == cursor_bracket {
             style = style.fg(theme.match_bracket).add_modifier(Modifier::BOLD);
+        }
+        // Search hits sit on top: the current match inverted, the rest tinted.
+        if let Some((mi, _)) = search
+            .iter()
+            .enumerate()
+            .find(|(_, (a, b))| *a <= here && here < *b)
+        {
+            if mi == search_current {
+                style = style
+                    .bg(theme.accent)
+                    .fg(theme.bg)
+                    .add_modifier(Modifier::BOLD);
+            } else {
+                style = style.bg(theme.match_bracket).fg(theme.bg);
+            }
         }
 
         if group_style == Some(style) {

@@ -28,6 +28,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let show_tabs = app.buffers.len() > 1;
     let show_panel = app.run.is_some();
+    let show_search = app.search.is_some();
 
     let mut rows = Vec::new();
     if show_tabs {
@@ -37,6 +38,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if show_panel {
         rows.push(Constraint::Length(1)); // splitter
         rows.push(Constraint::Length(panel_height(app, area)));
+    }
+    if show_search {
+        rows.push(Constraint::Length(crate::search::SEARCH_ROWS));
     }
     rows.push(Constraint::Length(1)); // status
     let chunks = Layout::vertical(rows).split(area);
@@ -58,20 +62,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else {
         (None, None)
     };
+    let search_area = if show_search {
+        let s = chunks[i];
+        i += 1;
+        Some(s)
+    } else {
+        None
+    };
     let status_area = chunks[i];
 
     app.editor_rect = editor_area;
     app.status_rect = status_area;
     app.splitter_rect = splitter_area;
     app.panel_rect = panel_area;
+    app.search_rect = search_area;
 
     app.editor_rows = editor_area.height as usize;
     let show_numbers = app.config.show_line_numbers;
+    let search_matches: &[(crate::buffer::Position, crate::buffer::Position)] = if show_search {
+        &app.search_matches
+    } else {
+        &[]
+    };
     let cursor_screen = editor::render(
         f,
         &mut app.buffers[app.active],
         &app.theme,
         show_numbers,
+        search_matches,
+        app.search_idx,
         editor_area,
     );
 
@@ -98,6 +117,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.panel_close_rect = None;
     }
 
+    if let (Some(sa), Some(s)) = (search_area, &app.search) {
+        let cur = if app.search_matches.is_empty() {
+            0
+        } else {
+            app.search_idx + 1
+        };
+        crate::search::render(f, s, &app.theme, (cur, app.search_matches.len()), sa);
+    }
+
     // Record the run/stop button's hit rect (leftmost cells of the status bar).
     let btn_w = (app.run_button_label().chars().count() as u16).min(status_area.width);
     app.run_button = Some(Rect {
@@ -112,6 +140,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // non-modal, so it never draws while an overlay owns the screen or the
     // output panel has focus.
     if !app.overlay.is_open()
+        && app.search.is_none()
         && app.focus == Focus::Editor
         && let (Some(c), Some(pos)) = (&app.completion, cursor_screen)
     {
@@ -133,7 +162,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 /// leaving the editor at least `MIN_EDITOR_ROWS` (plus the splitter and status).
 pub fn panel_height(app: &App, area: Rect) -> u16 {
     let tabs = if app.buffers.len() > 1 { 1 } else { 0 };
-    let reserved = tabs + 1 /* splitter */ + 1 /* status */ + MIN_EDITOR_ROWS;
+    let search = if app.search.is_some() {
+        crate::search::SEARCH_ROWS
+    } else {
+        0
+    };
+    let reserved = tabs + 1 /* splitter */ + search + 1 /* status */ + MIN_EDITOR_ROWS;
     let max = area.height.saturating_sub(reserved).max(1);
     let want = app
         .panel_height

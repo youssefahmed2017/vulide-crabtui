@@ -42,6 +42,8 @@ pub enum Cmd {
     RunFile,
     StopRun,
     CloseOutput,
+    Find,
+    Replace,
     Help,
 }
 

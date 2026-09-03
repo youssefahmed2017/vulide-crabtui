@@ -148,6 +148,14 @@ impl Buffer {
         })
     }
 
+    /// The selected text, or `None` when there is no selection. Used to seed the
+    /// find field from whatever is highlighted.
+    pub fn selection_text(&self) -> Option<String> {
+        let (a, b) = self.selection()?;
+        let (i, j) = (self.char_index(a), self.char_index(b));
+        Some(self.rope.slice(i..j).to_string())
+    }
+
     pub fn title(&self) -> String {
         let name = self
             .path
@@ -456,6 +464,33 @@ impl Buffer {
             self.anchor = Some(mv::clamp(&self.rope, shift(a)));
         }
         self.history.set_break();
+    }
+
+    /// Replace each `(start, end)` range with `with` as one undo step. Ranges
+    /// must be non-overlapping; they are applied bottom-to-top so the char
+    /// offsets of the not-yet-done ranges stay valid. The cursor lands after the
+    /// topmost replacement (so a single-range call leaves it past the new text).
+    /// Returns how many ranges were replaced.
+    pub fn replace_ranges(&mut self, ranges: &[(Position, Position)], with: &str) -> usize {
+        if ranges.is_empty() {
+            return 0;
+        }
+        let mut sorted: Vec<(Position, Position)> = ranges.to_vec();
+        sorted.sort_by_key(|r| r.0);
+        self.history.record(&self.rope, self.cursor, false);
+        let with_len = with.chars().count();
+        let mut top_end = 0;
+        for &(start, end) in sorted.iter().rev() {
+            let (i, j) = (self.char_index(start), self.char_index(end));
+            self.rope.remove(i..j);
+            self.rope.insert(i, with);
+            top_end = i + with_len; // last iteration = smallest offset
+        }
+        self.cursor = self.pos_after(top_end);
+        self.anchor = None;
+        self.goal_col = None;
+        self.history.set_break();
+        sorted.len()
     }
 
     pub fn undo(&mut self) -> bool {
