@@ -20,9 +20,9 @@ cargo zigbuild --release --target "$TARGET"
 VER="0.1.0-g$(git rev-parse --short HEAD)"
 STAGE="$(mktemp -d)/VulIDE"
 mkdir -p "$STAGE"
+# The release profile + linker already strip this; host `strip` can't read a
+# cross-arch ELF anyway.
 install -m755 "target/$TARGET/release/vulide" "$STAGE/vulide"
-strip "$STAGE/vulide" 2>/dev/null || \
-  "$HOME/.local/bin/zig" objcopy --strip-all "$STAGE/vulide" "$STAGE/vulide" 2>/dev/null || true
 cp packaging/README-linux-arm64.txt "$STAGE/README.txt"
 
 mkdir -p "$DIST"
