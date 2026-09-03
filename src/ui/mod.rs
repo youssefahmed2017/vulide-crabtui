@@ -1,11 +1,13 @@
 //! Screen layout and draw dispatch.
 //!
-//! Phase 1: editor fills the screen with a one-row status bar. Phase 3 adds a
-//! tab strip, side panel, and bottom panel around this.
+//! Phase 3: a tab strip above the editor, a one-row status bar below. Panels
+//! (output console, algorithm viewer) slot in around this in Phases 4–5.
 
 pub mod editor;
 pub mod overlay;
+pub mod palette;
 pub mod status;
+pub mod tabs;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
@@ -16,22 +18,47 @@ use overlay::Overlay;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    let show_tabs = app.buffers.len() > 1;
+    let constraints = if show_tabs {
+        vec![
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ]
+    } else {
+        vec![Constraint::Min(1), Constraint::Length(1)]
+    };
+    let chunks = Layout::vertical(constraints).split(area);
+    let (editor_area, status_area) = if show_tabs {
+        tabs::render(f, app, chunks[0]);
+        (chunks[1], chunks[2])
+    } else {
+        (chunks[0], chunks[1])
+    };
 
-    app.editor_rows = chunks[0].height as usize;
-    let cursor_screen = editor::render(f, &mut app.buffer, &app.theme, chunks[0]);
-    status::render(f, app, chunks[1]);
+    app.editor_rows = editor_area.height as usize;
+    let show_numbers = app.config.show_line_numbers;
+    let cursor_screen = editor::render(
+        f,
+        &mut app.buffers[app.active],
+        &app.theme,
+        show_numbers,
+        editor_area,
+    );
+    status::render(f, app, status_area);
 
     // Autocomplete popup floats over the editor, anchored to the cursor. It is
     // non-modal, so it never draws while an overlay owns the screen.
     if !app.overlay.is_open()
         && let (Some(c), Some(pos)) = (&app.completion, cursor_screen)
     {
-        complete::render_popup(f, c, pos, &app.theme, chunks[0]);
+        complete::render_popup(f, c, pos, &app.theme, editor_area);
     }
 
     // Overlays draw last, over everything, and own the cursor while open.
-    if let Overlay::SaveAs(prompt) = &app.overlay {
-        overlay::render_save_as(f, prompt, &app.theme, area);
+    match &app.overlay {
+        Overlay::Prompt(prompt) => overlay::render_prompt(f, prompt, &app.theme, area),
+        Overlay::Palette(palette) => palette::render(f, palette, &app.theme, area),
+        Overlay::None => {}
     }
 }

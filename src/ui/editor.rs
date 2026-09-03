@@ -18,14 +18,24 @@ const GUTTER_MIN: u16 = 4;
 
 /// Renders the editor and returns the cursor's screen cell, when it is visible
 /// (the autocomplete popup anchors to it).
-pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) -> Option<(u16, u16)> {
+pub fn render(
+    f: &mut Frame,
+    buf: &mut Buffer,
+    theme: &Theme,
+    show_numbers: bool,
+    area: Rect,
+) -> Option<(u16, u16)> {
     if area.width == 0 || area.height == 0 {
         return None;
     }
     f.render_widget(Block::default().style(Style::default().bg(theme.bg)), area);
 
     let total = buf.line_count().max(1);
-    let gutter_w = ((total.to_string().len() as u16) + 1).max(GUTTER_MIN);
+    let gutter_w = if show_numbers {
+        ((total.to_string().len() as u16) + 1).max(GUTTER_MIN)
+    } else {
+        0
+    };
     let text_w = area.width.saturating_sub(gutter_w) as usize;
     let text_h = area.height as usize;
     if text_w == 0 {
@@ -49,14 +59,16 @@ pub fn render(f: &mut Frame, buf: &mut Buffer, theme: &Theme, area: Rect) -> Opt
             continue;
         }
         let is_current = ln == cursor.line;
-        let gutter_style = Style::default().bg(theme.bg).fg(if is_current {
-            theme.line_hl
-        } else {
-            theme.line_fg
-        });
-        let label = format!("{:>w$} ", ln + 1, w = (gutter_w - 1) as usize);
-
-        let mut spans = vec![Span::styled(label, gutter_style)];
+        let mut spans: Vec<Span> = Vec::new();
+        if gutter_w > 0 {
+            let gutter_style = Style::default().bg(theme.bg).fg(if is_current {
+                theme.line_hl
+            } else {
+                theme.line_fg
+            });
+            let label = format!("{:>w$} ", ln + 1, w = (gutter_w - 1) as usize);
+            spans.push(Span::styled(label, gutter_style));
+        }
         spans.extend(styled_text(
             &buf.line_text(ln),
             ln,

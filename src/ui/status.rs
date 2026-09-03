@@ -15,11 +15,16 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         .bg(theme.statusbar_bg);
     let accent = Style::default().fg(theme.accent).bg(theme.statusbar_bg);
 
-    let cursor = app.buffer.cursor();
-    let pos = format!(" Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);
+    let cursor = app.buf().cursor();
+    let tab_of = if app.buffers.len() > 1 {
+        format!("[{}/{}] ", app.active + 1, app.buffers.len())
+    } else {
+        String::new()
+    };
+    let pos = format!(" {tab_of}Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);
 
     let left = if app.status.is_empty() {
-        format!(" {} ", app.buffer.title())
+        format!(" {} ", app.buf().title())
     } else {
         format!(" {} ", app.status)
     };

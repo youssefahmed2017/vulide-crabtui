@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
 use crate::buffer::Buffer;
+use crate::config::Config;
 use crate::event::AppEvent;
 
 pub struct Harness {
@@ -24,7 +25,7 @@ impl Harness {
     pub fn new(width: u16, height: u16) -> Self {
         let terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut h = Self {
-            app: App::new(),
+            app: App::with_config(Config::default()),
             terminal,
         };
         h.draw();
@@ -33,7 +34,7 @@ impl Harness {
 
     pub fn with_text(text: &str, width: u16, height: u16) -> Self {
         let mut h = Self::new(width, height);
-        h.app.buffer = Buffer::from_str(text);
+        h.app.buffers[0] = Buffer::from_str(text);
         h.draw();
         h
     }
@@ -151,7 +152,9 @@ mod tests {
     #[test]
     fn autocomplete_popup_appears_and_accepts() {
         let mut h = Harness::with_text("counter = 0\n", 40, 10);
-        h.app.buffer.set_cursor(Position { line: 1, col: 0 }, false);
+        h.app
+            .buf_mut()
+            .set_cursor(Position { line: 1, col: 0 }, false);
         h.draw();
 
         h.type_str("G $c");
@@ -160,20 +163,22 @@ mod tests {
 
         h.key(KeyCode::Tab);
         assert!(h.app.completion.is_none(), "popup closes on accept");
-        assert_eq!(h.app.buffer.line_text(1), "G $counter");
+        assert_eq!(h.app.buf().line_text(1), "G $counter");
     }
 
     #[test]
     fn autocomplete_dismisses_on_esc_without_editing() {
         let mut h = Harness::with_text("value = 1\n", 40, 10);
-        h.app.buffer.set_cursor(Position { line: 1, col: 0 }, false);
+        h.app
+            .buf_mut()
+            .set_cursor(Position { line: 1, col: 0 }, false);
         h.draw();
 
         h.type_str("$va");
         assert!(h.app.completion.is_some());
         h.key(KeyCode::Esc);
         assert!(h.app.completion.is_none());
-        assert_eq!(h.app.buffer.line_text(1), "$va");
+        assert_eq!(h.app.buf().line_text(1), "$va");
         assert!(
             !h.contains("value = 1\nvalue"),
             "no completion was inserted"
@@ -184,7 +189,7 @@ mod tests {
     fn enter_and_autoindent_render() {
         let mut h = Harness::new(40, 8);
         h.type_str("? $x > 1\n");
-        assert_eq!(h.app.buffer.cursor(), Position { line: 1, col: 4 });
+        assert_eq!(h.app.buf().cursor(), Position { line: 1, col: 4 });
         h.type_str("G\"big\"");
         assert!(h.line(1).ends_with("    G\"big\""));
     }
@@ -194,13 +199,13 @@ mod tests {
         let mut h = Harness::new(40, 6);
         h.type_str("abcd");
         h.key(KeyCode::Backspace);
-        assert_eq!(h.app.buffer.rope().to_string(), "abc");
+        assert_eq!(h.app.buf().rope().to_string(), "abc");
         h.ctrl('z'); // undo the backspace
-        assert_eq!(h.app.buffer.rope().to_string(), "abcd");
+        assert_eq!(h.app.buf().rope().to_string(), "abcd");
         h.ctrl('z'); // undo the typing group
-        assert_eq!(h.app.buffer.rope().to_string(), "");
+        assert_eq!(h.app.buf().rope().to_string(), "");
         h.ctrl('y');
-        assert_eq!(h.app.buffer.rope().to_string(), "abcd");
+        assert_eq!(h.app.buf().rope().to_string(), "abcd");
     }
 
     #[test]
@@ -211,11 +216,11 @@ mod tests {
             h.key_mods(KeyCode::Left, KeyModifiers::SHIFT);
         }
         assert_eq!(
-            h.app.buffer.selection(),
+            h.app.buf().selection(),
             Some((Position { line: 0, col: 6 }, Position { line: 0, col: 11 }))
         );
         h.key(KeyCode::Backspace);
-        assert_eq!(h.app.buffer.rope().to_string(), "hello ");
+        assert_eq!(h.app.buf().rope().to_string(), "hello ");
     }
 
     #[test]
@@ -237,7 +242,7 @@ mod tests {
     fn horizontal_scroll_follows_cursor() {
         let mut h = Harness::new(24, 5);
         h.type_str(&"x".repeat(60));
-        assert_eq!(h.app.buffer.cursor().col, 60);
+        assert_eq!(h.app.buf().cursor().col, 60);
         // the line is far wider than the viewport, so it must be clipped
         assert!(h.screen().matches('x').count() < 60);
         // and the cursor end of the line stays visible
@@ -252,11 +257,11 @@ mod tests {
         assert!(h.contains("Save As"));
         assert!(matches!(
             h.app.overlay,
-            crate::ui::overlay::Overlay::SaveAs(_)
+            crate::ui::overlay::Overlay::Prompt(_)
         ));
         // editor keystrokes are captured by the overlay now
         h.type_str("abc");
-        assert_eq!(h.app.buffer.rope().to_string(), "G\"hi\"");
+        assert_eq!(h.app.buf().rope().to_string(), "G\"hi\"");
         h.key(KeyCode::Esc);
         assert!(!h.app.overlay.is_open());
         assert!(h.contains("save cancelled"));
@@ -279,8 +284,8 @@ mod tests {
 
         assert!(!h.app.overlay.is_open());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "G\"saved\"\n");
-        assert!(!h.app.buffer.is_dirty());
-        assert_eq!(h.app.buffer.path(), Some(path.as_path()));
+        assert!(!h.app.buf().is_dirty());
+        assert_eq!(h.app.buf().path(), Some(path.as_path()));
         std::fs::remove_file(&path).ok();
 
         // a second Ctrl+S now writes straight through, no overlay
@@ -289,5 +294,88 @@ mod tests {
         assert!(!h.app.overlay.is_open());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "G\"saved\"!\n");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn tabs_open_switch_and_close() {
+        let mut h = Harness::new(60, 12);
+        h.type_str("first");
+        h.ctrl('n'); // new tab
+        assert_eq!(h.app.buffers.len(), 2);
+        assert_eq!(h.app.active, 1);
+        h.type_str("second");
+        assert!(h.contains("[2/2]")); // status bar shows the tab count
+
+        h.key_mods(KeyCode::PageUp, KeyModifiers::CONTROL); // prev tab
+        assert_eq!(h.app.active, 0);
+        assert_eq!(h.app.buf().rope().to_string(), "first");
+
+        h.key_mods(KeyCode::PageDown, KeyModifiers::CONTROL); // next tab
+        assert_eq!(h.app.active, 1);
+
+        // dirty tab won't close without discard
+        h.ctrl('w');
+        assert_eq!(h.app.buffers.len(), 2);
+        assert!(h.contains("unsaved changes"));
+    }
+
+    #[test]
+    fn command_palette_filters_and_runs() {
+        let mut h = Harness::new(80, 16);
+        assert_eq!(h.app.buffers.len(), 1);
+
+        h.ctrl('p');
+        assert!(h.contains("Commands"));
+        h.type_str("new tab"); // fuzzy filter
+        h.key(KeyCode::Enter);
+
+        assert!(!h.app.overlay.is_open());
+        assert_eq!(h.app.buffers.len(), 2, "palette ran 'New Tab'");
+    }
+
+    #[test]
+    fn palette_cycles_theme() {
+        let mut h = Harness::new(80, 16);
+        assert_eq!(h.app.theme.name, "Dark (Catppuccin Mocha)");
+        h.ctrl('p');
+        h.type_str("theme nord");
+        h.key(KeyCode::Enter);
+        assert_eq!(h.app.theme.name, "Nord");
+        assert_eq!(h.app.config.theme, "Nord");
+    }
+
+    #[test]
+    fn ctrl_o_opens_a_file_in_a_new_tab() {
+        let path = std::env::temp_dir().join(format!("vulide_open_{}.vul", std::process::id()));
+        std::fs::write(&path, "G\"from disk\"\n").unwrap();
+
+        let mut h = Harness::new(80, 14);
+        h.type_str("scratch");
+        h.ctrl('o');
+        for _ in 0..300 {
+            h.key(KeyCode::Backspace);
+        }
+        h.type_str(path.to_str().unwrap());
+        h.key(KeyCode::Enter);
+
+        assert!(!h.app.overlay.is_open());
+        assert_eq!(h.app.buffers.len(), 2);
+        assert_eq!(h.app.buf().rope().to_string(), "G\"from disk\"");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn toggle_line_numbers_via_palette() {
+        let mut h = Harness::with_text("G\"x\"", 40, 8);
+        assert!(
+            h.line(0).starts_with("  1 "),
+            "gutter present: {:?}",
+            h.line(0)
+        );
+        h.ctrl('p');
+        h.type_str("line numbers");
+        h.key(KeyCode::Enter);
+        assert!(!h.app.config.show_line_numbers);
+        assert_eq!(h.line(0), "G\"x\"", "gutter gone:\n{}", h.screen());
     }
 }

@@ -1,7 +1,9 @@
-//! The modal overlay layer. Phase 1.5 has one member — the **Save As** prompt,
-//! opened when `Ctrl+S` hits an untitled buffer. Phase 3's command palette and
-//! file picker reuse `centered_rect` and the same "captures all input while
-//! open" contract.
+//! The modal overlay layer.
+//!
+//! Members: the **path prompt** (Save As / Open File — `Ctrl+S` on an untitled
+//! buffer, `Ctrl+O`) and the **command palette** (`Ctrl+P`, in `palette.rs`).
+//! While an overlay is open it captures all key input; `centered_rect` is the
+//! shared geometry helper.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -10,12 +12,14 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
+use super::palette::Palette;
 use crate::buffer::Buffer;
 use crate::theme::Theme;
 
 pub enum Overlay {
     None,
-    SaveAs(Box<SaveAs>),
+    Prompt(Box<PathPrompt>),
+    Palette(Box<Palette>),
 }
 
 impl Overlay {
@@ -24,8 +28,14 @@ impl Overlay {
     }
 }
 
-/// What the app should do with a key the Save As prompt just consumed.
-pub enum SaveAsOutcome {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    Save,
+    Open,
+}
+
+/// What the app should do with a key the path prompt just consumed.
+pub enum PromptOutcome {
     /// Stay open, keep editing the path.
     Stay,
     /// User cancelled.
@@ -34,61 +44,88 @@ pub enum SaveAsOutcome {
     Submit(String),
 }
 
-pub struct SaveAs {
+pub struct PathPrompt {
     /// Single-line path editor — a one-line `Buffer` so it reuses the tested
     /// insert/delete/movement code.
     input: Buffer,
     pub error: Option<String>,
+    pub kind: PromptKind,
 }
 
-impl SaveAs {
-    pub fn new(seed: &str) -> Self {
+impl PathPrompt {
+    pub fn save(seed: &str) -> Self {
+        Self::seeded(seed, PromptKind::Save)
+    }
+
+    pub fn open(seed: &str) -> Self {
+        Self::seeded(seed, PromptKind::Open)
+    }
+
+    fn seeded(seed: &str, kind: PromptKind) -> Self {
         let mut input = Buffer::from_str(seed);
         input.move_doc_end(false);
-        Self { input, error: None }
+        Self {
+            input,
+            error: None,
+            kind,
+        }
     }
 
     pub fn path(&self) -> String {
         self.input.rope().to_string()
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> SaveAsOutcome {
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            PromptKind::Save => " Save As ",
+            PromptKind::Open => " Open File ",
+        }
+    }
+
+    fn hint(&self) -> &'static str {
+        match self.kind {
+            PromptKind::Save => "      Enter save · Esc cancel",
+            PromptKind::Open => "      Enter open · Esc cancel",
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> PromptOutcome {
         let plain = !key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => SaveAsOutcome::Cancel,
-            KeyCode::Enter => SaveAsOutcome::Submit(self.path().trim().to_string()),
+            KeyCode::Esc => PromptOutcome::Cancel,
+            KeyCode::Enter => PromptOutcome::Submit(self.path().trim().to_string()),
             KeyCode::Backspace => {
                 self.input.delete_backward();
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
             KeyCode::Delete => {
                 self.input.delete_forward();
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
             KeyCode::Left => {
                 self.input.move_left(false);
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
             KeyCode::Right => {
                 self.input.move_right(false);
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
             KeyCode::Home => {
                 self.input.move_home(false);
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
             KeyCode::End => {
                 self.input.move_end(false);
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
             KeyCode::Char(c) if plain && c != '\n' => {
                 self.input.insert_char(c);
                 self.error = None;
-                SaveAsOutcome::Stay
+                PromptOutcome::Stay
             }
-            _ => SaveAsOutcome::Stay,
+            _ => PromptOutcome::Stay,
         }
     }
 }
@@ -114,7 +151,7 @@ pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     }
 }
 
-pub fn render_save_as(f: &mut Frame, prompt: &SaveAs, theme: &Theme, area: Rect) {
+pub fn render_prompt(f: &mut Frame, prompt: &PathPrompt, theme: &Theme, area: Rect) {
     let extra = if prompt.error.is_some() { 2 } else { 0 };
     let rect = centered_rect(64, 7 + extra, area);
     f.render_widget(Clear, rect);
@@ -123,17 +160,15 @@ pub fn render_save_as(f: &mut Frame, prompt: &SaveAs, theme: &Theme, area: Rect)
     let muted = Style::default()
         .fg(theme.statusbar_fg)
         .bg(theme.statusbar_bg);
+    let accent = Style::default()
+        .fg(theme.accent)
+        .bg(theme.statusbar_bg)
+        .add_modifier(Modifier::BOLD);
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::symmetric(2, 1))
         .border_style(Style::default().fg(theme.accent).bg(theme.statusbar_bg))
-        .title(Span::styled(
-            " Save As ",
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.statusbar_bg)
-                .add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(prompt.title(), accent))
         .style(panel);
     let inner = block.inner(rect);
     f.render_widget(block, rect);
@@ -156,17 +191,16 @@ pub fn render_save_as(f: &mut Frame, prompt: &SaveAs, theme: &Theme, area: Rect)
         )));
         lines.push(Line::default());
     }
+    let verb = if prompt.kind == PromptKind::Save {
+        "[ Save ]"
+    } else {
+        "[ Open ]"
+    };
     lines.push(Line::from(vec![
         Span::styled("[ Cancel ]", muted),
         Span::styled("   ", panel),
-        Span::styled(
-            "[ Save ]",
-            Style::default()
-                .fg(theme.accent)
-                .bg(theme.statusbar_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("      Enter save · Esc cancel", muted),
+        Span::styled(verb, accent),
+        Span::styled(prompt.hint(), muted),
     ]));
     f.render_widget(Paragraph::new(lines).style(panel), inner);
 

@@ -1,8 +1,10 @@
 //! Top-level application state and the event loop.
 //!
 //! One `App` owns everything the UI reads. Widgets are pure functions of it.
-//! Phase 3 turns `buffer` into a `Vec<Buffer>` behind a tab bar.
+//! Phase 3: `buffers` is a `Vec` behind a tab strip; a `Config` loaded from
+//! `~/.config/vulide/config.toml` drives editor behaviour.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -12,15 +14,19 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::buffer::Buffer;
 use crate::complete::Completion;
+use crate::config::Config;
 use crate::event::{AppEvent, EventSource};
 use crate::theme::Theme;
 use crate::ui;
-use crate::ui::overlay::{Overlay, SaveAs, SaveAsOutcome, expand_tilde};
+use crate::ui::overlay::{Overlay, PathPrompt, PromptKind, PromptOutcome, expand_tilde};
+use crate::ui::palette::{Cmd, Entry, Palette, PaletteOutcome};
 
 const TICK: Duration = Duration::from_millis(250);
 
 pub struct App {
-    pub buffer: Buffer,
+    pub buffers: Vec<Buffer>,
+    pub active: usize,
+    pub config: Config,
     pub theme: Theme,
     pub themes: Vec<Theme>,
     pub theme_idx: usize,
@@ -34,33 +40,272 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
+        let (config, warning) = Config::load();
+        let mut app = Self::with_config(config);
+        if let Some(w) = warning {
+            app.set_status(w);
+        }
+        app
+    }
+
+    /// Build an app around an explicit config, skipping the disk read. Tests use
+    /// this so a developer's real `~/.config/vulide/config.toml` can't sway them.
+    pub fn with_config(config: Config) -> Self {
         let themes = Theme::builtins();
-        Self {
-            buffer: Buffer::new(),
-            theme: themes[0].clone(),
+        let theme_idx = themes
+            .iter()
+            .position(|t| t.name == config.theme)
+            .unwrap_or(0);
+        let theme = themes[theme_idx].clone();
+
+        let mut app = Self {
+            buffers: vec![Buffer::new()],
+            active: 0,
+            config,
+            theme,
             themes,
-            theme_idx: 0,
+            theme_idx,
             status: String::new(),
             editor_rows: 20,
             overlay: Overlay::None,
             completion: None,
             should_quit: false,
+        };
+        app.apply_config();
+        app
+    }
+
+    // ---- buffer access ----
+
+    pub fn buf(&self) -> &Buffer {
+        &self.buffers[self.active]
+    }
+
+    pub fn buf_mut(&mut self) -> &mut Buffer {
+        &mut self.buffers[self.active]
+    }
+
+    /// Push the config's editor settings onto every open buffer.
+    fn apply_config(&mut self) {
+        let c = &self.config;
+        for b in &mut self.buffers {
+            b.tab_width = c.tab_width;
+            b.auto_close_brackets = c.auto_close_brackets;
+            b.auto_indent = c.auto_indent;
         }
     }
 
-    /// Advance to the next bundled theme (Ctrl+T).
-    pub fn cycle_theme(&mut self) {
-        self.theme_idx = (self.theme_idx + 1) % self.themes.len();
-        self.theme = self.themes[self.theme_idx].clone();
-        let name = self.theme.name.clone();
-        self.set_status(format!("theme: {name}"));
+    fn save_config(&mut self) {
+        // Never write a real config file from a test run.
+        if cfg!(test) {
+            return;
+        }
+        if let Err(e) = self.config.save() {
+            self.set_status(format!("config not saved: {e}"));
+        }
     }
 
+    // ---- theme ----
+
+    /// Advance to the next bundled theme (Ctrl+T).
+    pub fn cycle_theme(&mut self) {
+        let next = (self.theme_idx + 1) % self.themes.len();
+        self.set_theme(next);
+        self.set_status(format!("theme: {}", self.theme.name));
+    }
+
+    fn set_theme(&mut self, idx: usize) {
+        self.theme_idx = idx.min(self.themes.len() - 1);
+        self.theme = self.themes[self.theme_idx].clone();
+        self.config.theme = self.theme.name.clone();
+        self.save_config();
+    }
+
+    fn set_theme_by_name(&mut self, name: &str) {
+        if let Some(i) = self.themes.iter().position(|t| t.name == name) {
+            self.set_theme(i);
+            self.set_status(format!("theme: {}", self.theme.name));
+        }
+    }
+
+    // ---- tabs / files ----
+
     pub fn open_path(&mut self, path: PathBuf) -> Result<()> {
-        self.buffer = Buffer::open(&path)?;
-        self.set_status(format!("opened {}", path.display()));
+        self.open_file(path)?;
         Ok(())
     }
+
+    fn open_file(&mut self, path: PathBuf) -> io::Result<()> {
+        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+
+        if let Some(i) = self
+            .buffers
+            .iter()
+            .position(|b| b.path().map(|p| p == canonical) == Some(true))
+        {
+            self.active = i;
+            self.set_status(format!("switched to {}", self.buffers[i].title()));
+            return Ok(());
+        }
+
+        let buf = Buffer::open(&path)?;
+        // Replace a pristine lone "untitled" buffer instead of stacking a tab.
+        if self.buffers.len() == 1 && self.buf().path().is_none() && !self.buf().is_dirty() {
+            self.buffers[0] = buf;
+            self.active = 0;
+        } else {
+            self.buffers.push(buf);
+            self.active = self.buffers.len() - 1;
+        }
+        self.apply_config();
+        self.completion = None;
+        self.set_status(format!("opened {}", self.buf().title()));
+
+        self.config.push_recent(&canonical);
+        self.save_config();
+        Ok(())
+    }
+
+    fn new_tab(&mut self) {
+        self.buffers.push(Buffer::new());
+        self.active = self.buffers.len() - 1;
+        self.apply_config();
+        self.completion = None;
+        self.set_status("new buffer");
+    }
+
+    fn close_tab(&mut self, discard: bool) {
+        if self.buf().is_dirty() && !discard {
+            self.set_status("unsaved changes — save (Ctrl+S) or use palette › Close Tab (discard)");
+            return;
+        }
+        self.buffers.remove(self.active);
+        if self.buffers.is_empty() {
+            self.buffers.push(Buffer::new());
+            self.apply_config();
+        }
+        self.active = self.active.min(self.buffers.len() - 1);
+        self.completion = None;
+        self.set_status("closed tab");
+    }
+
+    fn next_tab(&mut self) {
+        self.active = (self.active + 1) % self.buffers.len();
+        self.completion = None;
+    }
+
+    fn prev_tab(&mut self) {
+        self.active = (self.active + self.buffers.len() - 1) % self.buffers.len();
+        self.completion = None;
+    }
+
+    fn save_active(&mut self) {
+        if self.buf().path().is_none() {
+            self.overlay = Overlay::Prompt(Box::new(PathPrompt::save(&default_save_seed())));
+            return;
+        }
+        let msg = match self.buf_mut().save() {
+            Ok(()) => format!("saved {}", self.buf().title()),
+            Err(e) => format!("save failed: {e}"),
+        };
+        self.set_status(msg);
+    }
+
+    // ---- command palette ----
+
+    fn open_palette(&mut self) {
+        let mut entries = vec![
+            Entry::new("Save", Cmd::Save),
+            Entry::new("Save As…", Cmd::SaveAs),
+            Entry::new("Open File…", Cmd::OpenFile),
+            Entry::new("New Tab", Cmd::NewTab),
+            Entry::new("Close Tab", Cmd::CloseTab),
+            Entry::new("Close Tab (discard changes)", Cmd::CloseTabDiscard),
+            Entry::new("Next Tab", Cmd::NextTab),
+            Entry::new("Previous Tab", Cmd::PrevTab),
+            Entry::new("Cycle Theme", Cmd::NextTheme),
+            Entry::new("Toggle Line Numbers", Cmd::ToggleLineNumbers),
+            Entry::new("Toggle Word Wrap", Cmd::ToggleWordWrap),
+            Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
+            Entry::new("Reload Config", Cmd::ReloadConfig),
+            Entry::new("Quit", Cmd::Quit),
+        ];
+        for t in &self.themes {
+            entries.push(Entry::new(
+                format!("Theme: {}", t.name),
+                Cmd::SetTheme(t.name.clone()),
+            ));
+        }
+        for p in &self.config.recent_files {
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string());
+            entries.push(Entry::new(
+                format!("Open Recent: {name}"),
+                Cmd::OpenRecent(p.clone()),
+            ));
+        }
+        self.overlay = Overlay::Palette(Box::new(Palette::new(entries)));
+    }
+
+    fn run_command(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Quit => self.should_quit = true,
+            Cmd::Save => self.save_active(),
+            Cmd::SaveAs => {
+                self.overlay = Overlay::Prompt(Box::new(PathPrompt::save(&default_save_seed())));
+            }
+            Cmd::OpenFile => {
+                self.overlay = Overlay::Prompt(Box::new(PathPrompt::open(&default_save_seed())));
+            }
+            Cmd::NewTab => self.new_tab(),
+            Cmd::CloseTab => self.close_tab(false),
+            Cmd::CloseTabDiscard => self.close_tab(true),
+            Cmd::NextTab => self.next_tab(),
+            Cmd::PrevTab => self.prev_tab(),
+            Cmd::NextTheme => self.cycle_theme(),
+            Cmd::SetTheme(name) => self.set_theme_by_name(&name),
+            Cmd::ToggleLineNumbers => {
+                self.config.show_line_numbers = !self.config.show_line_numbers;
+                self.save_config();
+                self.set_status(format!(
+                    "line numbers: {}",
+                    on_off(self.config.show_line_numbers)
+                ));
+            }
+            Cmd::ToggleWordWrap => {
+                self.config.word_wrap = !self.config.word_wrap;
+                self.save_config();
+                self.set_status(format!("word wrap: {}", on_off(self.config.word_wrap)));
+            }
+            Cmd::ToggleAutoClose => {
+                self.config.auto_close_brackets = !self.config.auto_close_brackets;
+                self.apply_config();
+                self.save_config();
+                self.set_status(format!(
+                    "auto-close brackets: {}",
+                    on_off(self.config.auto_close_brackets)
+                ));
+            }
+            Cmd::ReloadConfig => {
+                let (cfg, warning) = Config::load();
+                self.config = cfg;
+                self.apply_config();
+                if let Some(name) = self.themes.iter().position(|t| t.name == self.config.theme) {
+                    self.set_theme(name);
+                }
+                self.set_status(warning.unwrap_or_else(|| "config reloaded".to_string()));
+            }
+            Cmd::OpenRecent(path) => {
+                if let Err(e) = self.open_file(path) {
+                    self.set_status(format!("open failed: {e}"));
+                }
+            }
+        }
+    }
+
+    // ---- misc ----
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
@@ -102,7 +347,7 @@ impl App {
         match ev {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Paste(text) => {
-                self.buffer.insert_str(&text);
+                self.buf_mut().insert_str(&text);
                 self.clear_status();
             }
             AppEvent::Resize(..) | AppEvent::Tick => {}
@@ -113,40 +358,76 @@ impl App {
         self.status.clear();
     }
 
-    /// Route a key to the Save As overlay while it is open. Returns `true` if
-    /// the overlay consumed the key (the editor must not also see it).
+    /// Route a key to whatever overlay is open. Returns `true` if the overlay
+    /// consumed the key (the editor must not also see it).
     fn handle_overlay_key(&mut self, key: KeyEvent) -> bool {
-        let outcome = match &mut self.overlay {
-            Overlay::SaveAs(prompt) => prompt.handle_key(key),
-            Overlay::None => return false,
+        match &mut self.overlay {
+            Overlay::None => false,
+            Overlay::Prompt(prompt) => {
+                let outcome = prompt.handle_key(key);
+                self.resolve_prompt(outcome);
+                true
+            }
+            Overlay::Palette(palette) => {
+                match palette.handle_key(key) {
+                    PaletteOutcome::Stay => {}
+                    PaletteOutcome::Cancel => self.overlay = Overlay::None,
+                    PaletteOutcome::Run(cmd) => {
+                        self.overlay = Overlay::None;
+                        self.run_command(cmd);
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    fn resolve_prompt(&mut self, outcome: PromptOutcome) {
+        let kind = match &self.overlay {
+            Overlay::Prompt(p) => p.kind,
+            _ => return,
         };
         match outcome {
-            SaveAsOutcome::Stay => {}
-            SaveAsOutcome::Cancel => {
+            PromptOutcome::Stay => {}
+            PromptOutcome::Cancel => {
                 self.overlay = Overlay::None;
-                self.set_status("save cancelled");
+                self.set_status(match kind {
+                    PromptKind::Save => "save cancelled",
+                    PromptKind::Open => "open cancelled",
+                });
             }
-            SaveAsOutcome::Submit(path) => {
-                if path.is_empty() {
-                    if let Overlay::SaveAs(prompt) = &mut self.overlay {
-                        prompt.error = Some("enter a path".to_string());
+            PromptOutcome::Submit(path) if path.is_empty() => {
+                if let Overlay::Prompt(prompt) = &mut self.overlay {
+                    prompt.error = Some("enter a path".to_string());
+                }
+            }
+            PromptOutcome::Submit(path) => {
+                let path = expand_tilde(&path);
+                let result: io::Result<String> = match kind {
+                    PromptKind::Save => {
+                        let r = self.buf_mut().save_as(&path);
+                        r.map(|()| format!("saved {}", self.buf().title()))
                     }
-                } else {
-                    match self.buffer.save_as(expand_tilde(&path)) {
-                        Ok(()) => {
-                            self.overlay = Overlay::None;
-                            self.set_status(format!("saved {}", self.buffer.title()));
+                    // `open_file` sets its own status; keep it on success.
+                    PromptKind::Open => {
+                        self.open_file(PathBuf::from(&path)).map(|()| String::new())
+                    }
+                };
+                match result {
+                    Ok(msg) => {
+                        self.overlay = Overlay::None;
+                        if !msg.is_empty() {
+                            self.set_status(msg);
                         }
-                        Err(e) => {
-                            if let Overlay::SaveAs(prompt) = &mut self.overlay {
-                                prompt.error = Some(e.to_string());
-                            }
+                    }
+                    Err(e) => {
+                        if let Overlay::Prompt(prompt) = &mut self.overlay {
+                            prompt.error = Some(e.to_string());
                         }
                     }
                 }
             }
         }
-        true
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -158,7 +439,11 @@ impl App {
         }
         self.handle_key_inner(key);
         // The `$word` context under the cursor may have changed — re-scan.
-        self.completion = Completion::detect(&self.buffer);
+        self.completion = if self.config.show_autocomplete {
+            Completion::detect(self.buf())
+        } else {
+            None
+        };
     }
 
     /// Route a key to the autocomplete popup. Returns `true` if it was consumed
@@ -180,7 +465,7 @@ impl App {
             KeyCode::Esc => self.completion = None,
             KeyCode::Tab => {
                 let tail = c.completion_tail().to_string();
-                self.buffer.insert_str(&tail);
+                self.buf_mut().insert_str(&tail);
                 self.completion = None;
             }
             // Enter still inserts a newline; it just closes the popup first so it
@@ -200,7 +485,7 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let rows = self.editor_rows.max(1);
 
-        // ---- app-level shortcuts (must not hold a &mut self.buffer) ----
+        // ---- app-level shortcuts (must not hold a &mut buffer) ----
         if ctrl {
             match key.code {
                 // Ctrl+C and Ctrl+Q both quit for now. A dirty-buffer guard and a
@@ -209,46 +494,63 @@ impl App {
                     self.should_quit = true;
                     return;
                 }
+                KeyCode::Char('p') => {
+                    self.open_palette();
+                    return;
+                }
+                KeyCode::Char('o') => {
+                    self.overlay =
+                        Overlay::Prompt(Box::new(PathPrompt::open(&default_save_seed())));
+                    return;
+                }
+                KeyCode::Char('n') => {
+                    self.new_tab();
+                    return;
+                }
+                KeyCode::Char('w') => {
+                    self.close_tab(false);
+                    return;
+                }
+                KeyCode::PageDown | KeyCode::Tab => {
+                    self.next_tab();
+                    return;
+                }
+                KeyCode::PageUp | KeyCode::BackTab => {
+                    self.prev_tab();
+                    return;
+                }
                 KeyCode::Char('t') => {
                     self.cycle_theme();
                     return;
                 }
                 KeyCode::Char('s') => {
-                    if self.buffer.path().is_none() {
-                        self.overlay = Overlay::SaveAs(Box::new(SaveAs::new(&default_save_seed())));
-                    } else {
-                        let msg = match self.buffer.save() {
-                            Ok(()) => format!("saved {}", self.buffer.title()),
-                            Err(e) => format!("save failed: {e}"),
-                        };
-                        self.set_status(msg);
-                    }
+                    self.save_active();
                     return;
                 }
                 KeyCode::Char('z') if !shift => {
-                    let ok = self.buffer.undo();
+                    let ok = self.buf_mut().undo();
                     self.set_status(if ok { "" } else { "nothing to undo" });
                     return;
                 }
                 KeyCode::Char('z') if shift => {
-                    self.buffer.redo();
+                    self.buf_mut().redo();
                     self.clear_status();
                     return;
                 }
                 KeyCode::Char('y') => {
-                    let ok = self.buffer.redo();
+                    let ok = self.buf_mut().redo();
                     self.set_status(if ok { "" } else { "nothing to redo" });
                     return;
                 }
                 KeyCode::Char('a') => {
-                    self.buffer.select_all();
+                    self.buf_mut().select_all();
                     return;
                 }
                 _ => {}
             }
         }
 
-        let b = &mut self.buffer;
+        let b = &mut self.buffers[self.active];
         match key.code {
             // ---- motion ----
             KeyCode::Left if ctrl => b.move_word_left(shift),
@@ -301,8 +603,12 @@ pub fn app_with_file(path: &Path) -> Result<App> {
     Ok(app)
 }
 
-/// Prefill for the Save As path field: the current working directory with a
-/// trailing separator, so the user only types a filename.
+fn on_off(b: bool) -> &'static str {
+    if b { "on" } else { "off" }
+}
+
+/// Prefill for the path field: the current working directory with a trailing
+/// separator, so the user only types a filename.
 fn default_save_seed() -> String {
     match std::env::current_dir() {
         Ok(dir) => format!("{}/", dir.display()),

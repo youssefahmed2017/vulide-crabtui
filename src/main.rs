@@ -11,6 +11,7 @@
 mod app;
 mod buffer;
 mod complete;
+mod config;
 mod event;
 mod syntax;
 mod theme;

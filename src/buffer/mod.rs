@@ -37,9 +37,17 @@ pub struct Buffer {
     path: Option<PathBuf>,
     history: History,
     pub tab_width: usize,
+    /// Type a matching `)]}"` when an opener is inserted (config-driven).
+    pub auto_close_brackets: bool,
+    /// Copy the current line's indent (and add a level after a block opener)
+    /// on newline (config-driven).
+    pub auto_indent: bool,
     pub scroll_top: usize,
     pub scroll_left: usize,
 }
+
+/// Openers that get an auto-typed partner, with that partner.
+const AUTO_PAIRS: &[(char, char)] = &[('(', ')'), ('[', ']'), ('{', '}'), ('"', '"')];
 
 impl Buffer {
     pub fn new() -> Self {
@@ -57,6 +65,8 @@ impl Buffer {
             path: None,
             history: History::new(),
             tab_width: 4,
+            auto_close_brackets: false,
+            auto_indent: true,
             scroll_top: 0,
             scroll_left: 0,
         }
@@ -257,15 +267,60 @@ impl Buffer {
 
     pub fn insert_char(&mut self, ch: char) {
         self.goal_col = None;
+        let had_selection = self.selection().is_some();
         self.delete_selection();
         if ch == '\n' {
             self.newline();
             return;
         }
+
+        // Type straight through a matching closer/quote that auto-close put there.
+        if self.auto_close_brackets
+            && !had_selection
+            && matches!(ch, ')' | ']' | '}' | '"')
+            && self.char_after() == Some(ch)
+        {
+            self.cursor = mv::right(&self.rope, self.cursor);
+            self.history.set_break();
+            return;
+        }
+
         self.history.record(&self.rope, self.cursor, true);
         let idx = self.char_index(self.cursor);
         self.rope.insert_char(idx, ch);
         self.cursor = self.pos_after(idx + 1);
+
+        // Auto-type the partner, leaving the cursor between the pair.
+        if self.auto_close_brackets
+            && !had_selection
+            && self.should_auto_close(ch)
+            && let Some(&(_, close)) = AUTO_PAIRS.iter().find(|&&(open, _)| open == ch)
+        {
+            let cidx = self.char_index(self.cursor);
+            self.rope.insert_char(cidx, close);
+        }
+    }
+
+    /// Whether inserting `ch` should pull in its auto-pair partner right now.
+    fn should_auto_close(&self, ch: char) -> bool {
+        if !AUTO_PAIRS.iter().any(|&(open, _)| open == ch) {
+            return false;
+        }
+        // Don't wrap into an adjacent word (`foo|` + `"` shouldn't become `foo"|"`).
+        match self.char_after() {
+            Some('"') if ch == '"' => false,
+            Some(c) => !c.is_alphanumeric() && c != '_',
+            None => true,
+        }
+    }
+
+    fn char_after(&self) -> Option<char> {
+        self.rope.get_char(self.char_index(self.cursor))
+    }
+
+    fn char_before(&self) -> Option<char> {
+        let idx = self.char_index(self.cursor);
+        (idx > 0).then(|| self.rope.char(idx - 1))
     }
 
     pub fn insert_str(&mut self, text: &str) {
@@ -287,12 +342,17 @@ impl Buffer {
         self.history.record(&self.rope, self.cursor, false);
 
         let current = self.line_text(self.cursor.line);
-        let indent: String = current.chars().take_while(|c| c.is_whitespace()).collect();
-        let first_non_ws = current.trim_start().chars().next();
-        let extra = if first_non_ws.is_some_and(|c| BLOCK_OPENERS.contains(&c)) {
-            self.tab_width
+        let (indent, extra): (String, usize) = if self.auto_indent {
+            let indent = current.chars().take_while(|c| c.is_whitespace()).collect();
+            let first_non_ws = current.trim_start().chars().next();
+            let extra = if first_non_ws.is_some_and(|c| BLOCK_OPENERS.contains(&c)) {
+                self.tab_width
+            } else {
+                0
+            };
+            (indent, extra)
         } else {
-            0
+            (String::new(), 0)
         };
         let mut insert = String::with_capacity(1 + indent.len() + extra);
         insert.push('\n');
@@ -308,6 +368,22 @@ impl Buffer {
     pub fn delete_backward(&mut self) {
         self.goal_col = None;
         if self.delete_selection() {
+            return;
+        }
+        // Backspace between an empty auto-pair (`(|)`) removes both sides.
+        if self.auto_close_brackets
+            && let (Some(b), Some(a)) = (self.char_before(), self.char_after())
+            && AUTO_PAIRS
+                .iter()
+                .any(|&(open, close)| open == b && close == a)
+        {
+            let prev = mv::left(&self.rope, self.cursor);
+            let next = mv::right(&self.rope, self.cursor);
+            let (x, z) = (self.char_index(prev), self.char_index(next));
+            self.history.record(&self.rope, self.cursor, false);
+            self.rope.remove(x..z);
+            self.cursor = prev;
+            self.history.set_break();
             return;
         }
         let prev = mv::left(&self.rope, self.cursor);
@@ -623,6 +699,39 @@ mod tests {
         let mut b = Buffer::from_str("F add(a, b)");
         b.set_cursor(Position { line: 0, col: 5 }, false); // on '('
         assert_eq!(b.matching_bracket(), Some(Position { line: 0, col: 10 }));
+    }
+
+    #[test]
+    fn auto_close_inserts_and_overtypes_pair() {
+        let mut b = Buffer::from_str("");
+        b.auto_close_brackets = true;
+        b.insert_char('F');
+        b.insert_char('(');
+        assert_eq!(b.rope().to_string(), "F()");
+        assert_eq!(b.cursor(), Position { line: 0, col: 2 });
+        b.insert_char(')'); // overtype, not a second ')'
+        assert_eq!(b.rope().to_string(), "F()");
+        assert_eq!(b.cursor(), Position { line: 0, col: 3 });
+    }
+
+    #[test]
+    fn auto_close_backspace_removes_both() {
+        let mut b = Buffer::from_str("");
+        b.auto_close_brackets = true;
+        b.insert_char('(');
+        assert_eq!(b.rope().to_string(), "()");
+        b.delete_backward();
+        assert_eq!(b.rope().to_string(), "");
+    }
+
+    #[test]
+    fn auto_indent_off_keeps_column_zero() {
+        let mut b = Buffer::from_str("    ? $x > 1");
+        b.auto_indent = false;
+        b.move_end(false);
+        b.newline();
+        assert_eq!(b.line_text(1), "");
+        assert_eq!(b.cursor(), Position { line: 1, col: 0 });
     }
 
     #[test]

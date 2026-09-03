@@ -1570,6 +1570,7 @@ dependencies = [
  "crossterm",
  "ratatui",
  "ropey",
+ "serde",
  "toml",
  "unicode-segmentation",
  "unicode-width",
