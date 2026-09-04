@@ -137,6 +137,22 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.algo_scroll = 0;
     }
 
+    // When the active file changes, reveal it in the tree once (expand its
+    // ancestors, select its row). One rebuild per switch, not per frame.
+    if show_files && let Some(tree) = &mut app.file_tree {
+        let path = app.buffers[app.active]
+            .path()
+            .map(std::path::Path::to_path_buf);
+        if path != app.files_revealed {
+            if let Some(p) = &path
+                && let Some(idx) = tree.reveal(p)
+            {
+                app.files_selected = idx;
+            }
+            app.files_revealed = path;
+        }
+    }
+
     // Same for the file tree (its rows live in `app.file_tree`).
     if let Some(fa) = files_area {
         let n = app.file_tree.as_ref().map(|t| t.len()).unwrap_or(0);

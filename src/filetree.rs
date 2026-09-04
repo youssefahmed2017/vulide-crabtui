@@ -95,6 +95,21 @@ impl FileTree {
         }
     }
 
+    /// Expand every ancestor directory of `path` and return its row index, if
+    /// `path` is inside the root.
+    pub fn reveal(&mut self, path: &Path) -> Option<usize> {
+        let rel = path.strip_prefix(&self.root).ok()?;
+        let mut acc = self.root.clone();
+        for comp in rel.components() {
+            acc.push(comp);
+            if acc != path {
+                self.expanded.insert(acc.clone());
+            }
+        }
+        self.rebuild();
+        self.rows.iter().position(|r| r.path == path)
+    }
+
     /// Row index of the parent directory of `idx`, if any.
     pub fn parent_of(&self, idx: usize) -> Option<usize> {
         let depth = self.rows.get(idx)?.depth;
@@ -224,6 +239,18 @@ mod tests {
         // row 1 is "inner.vul" at depth 1; its parent is row 0 ("sub").
         assert_eq!(t.parent_of(1), Some(0));
         assert_eq!(t.parent_of(0), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reveal_expands_ancestors_and_returns_the_row() {
+        let dir = fixture();
+        let mut t = FileTree::new(&dir);
+        assert_eq!(t.len(), 3); // sub, main.vul, notes.txt — "sub" collapsed
+        let idx = t.reveal(&dir.join("sub").join("inner.vul")).unwrap();
+        assert_eq!(t.rows()[idx].name, "inner.vul");
+        assert!(t.rows()[0].expanded, "ancestor 'sub' expanded");
+        assert_eq!(t.reveal(Path::new("/outside/x.vul")), None);
         fs::remove_dir_all(&dir).ok();
     }
 

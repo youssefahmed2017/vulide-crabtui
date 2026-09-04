@@ -36,11 +36,32 @@ pub fn render(
             Modifier::empty()
         });
 
+    let heading = match tree.map(|t| t.root.as_path()) {
+        Some(root) => {
+            let name = root
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root.display().to_string());
+            // Keep the tail of a long folder name — the border eats the rest.
+            let budget = area.width.saturating_sub(11) as usize; // "┌ Files — " + "┐"
+            let name = if name.chars().count() > budget && budget > 1 {
+                let tail: String = name
+                    .chars()
+                    .skip(name.chars().count() - (budget - 1))
+                    .collect();
+                format!("…{tail}")
+            } else {
+                name
+            };
+            format!(" Files — {name} ")
+        }
+        None => " Files ".to_string(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::new(1, 1, 0, 0))
         .border_style(border)
-        .title(Span::styled(" Files ", title))
+        .title(Span::styled(heading, title))
         .style(panel);
     let inner = block.inner(area);
     f.render_widget(block, area);

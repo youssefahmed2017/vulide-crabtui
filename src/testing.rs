@@ -1194,6 +1194,36 @@ mod tests {
     }
 
     #[test]
+    fn tree_title_shows_the_root_folder_and_reveals_the_active_file() {
+        let dir = tree_fixture("reveal");
+        // a nested file to open
+        std::fs::write(dir.join("lib").join("deep.vul"), "Q\n").unwrap();
+        let mut h = Harness::new(90, 20);
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+        h.key(KeyCode::F(2));
+
+        // the title carries the root folder name (tail-clipped to the column)
+        assert!(h.line(0).contains("Files — "), "title:\n{}", h.line(0));
+        let root_name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let tail: String = root_name.chars().rev().take(6).collect();
+        let tail: String = tail.chars().rev().collect();
+        assert!(
+            h.line(0).contains(&tail),
+            "root tail in title:\n{}",
+            h.line(0)
+        );
+
+        // open lib/deep.vul from disk — the tree should expand "lib" and select it
+        h.app.open_path(dir.join("lib").join("deep.vul")).unwrap();
+        h.draw();
+        assert!(h.contains("deep.vul"), "revealed:\n{}", h.screen());
+        let sel = &h.app.file_tree.as_ref().unwrap().rows()[h.app.files_selected];
+        assert_eq!(sel.name, "deep.vul");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn clicking_a_tree_row_opens_that_file() {
         let dir = tree_fixture("click");
         let mut h = Harness::new(80, 20);

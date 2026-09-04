@@ -84,6 +84,8 @@ pub struct App {
     /// Index of the first tree row drawn (kept so mouse clicks map to rows).
     pub files_scroll: usize,
     pub files_rect: Option<Rect>,
+    /// The path the tree last auto-revealed, so a file switch reveals once.
+    pub files_revealed: Option<PathBuf>,
 
     // ---- find / replace ----
     /// The find/replace bar, present while it is open.
@@ -174,6 +176,7 @@ impl App {
             files_selected: 0,
             files_scroll: 0,
             files_rect: None,
+            files_revealed: None,
             search: None,
             search_matches: Vec::new(),
             search_idx: 0,
