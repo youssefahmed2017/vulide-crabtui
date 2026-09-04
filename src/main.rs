@@ -47,6 +47,15 @@ fn main() -> Result<()> {
 
     let arg = std::env::args().nth(1);
 
+    // Save the terminal's current window title so we can put it back on exit
+    // (terminals that support the title stack, xterm CSI 22/23 t).
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[22;2t");
+        let _ = out.flush();
+    }
+
     let mut terminal = ratatui::init();
     let mut app = app::App::new();
     // Mouse reporting powers the status-bar ▶ button and click-to-focus. Hold
@@ -65,5 +74,11 @@ fn main() -> Result<()> {
     let result = app.run(&mut terminal);
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[23;2t"); // restore the saved window title
+        let _ = out.flush();
+    }
     result
 }

@@ -538,6 +538,28 @@ mod tests {
     }
 
     #[test]
+    fn window_title_tracks_file_and_dirty_state() {
+        let mut h = Harness::new(80, 10);
+        assert_eq!(h.app.window_title(), "VulIDE — Untitled");
+
+        h.type_str("G\"hi\"");
+        assert_eq!(
+            h.app.window_title(),
+            "VulIDE — Untitled •",
+            "unsaved edits get the dot"
+        );
+
+        let path = std::env::temp_dir().join(format!("vulide_title_{}.vul", std::process::id()));
+        std::fs::write(&path, "G\"disk\"\n").unwrap();
+        h.app.open_path(path.clone()).unwrap();
+        assert_eq!(
+            h.app.window_title(),
+            format!("VulIDE — {}", path.file_name().unwrap().to_string_lossy())
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn toggle_line_numbers_via_palette() {
         let mut h = Harness::with_text("G\"x\"", 40, 8);
         assert!(

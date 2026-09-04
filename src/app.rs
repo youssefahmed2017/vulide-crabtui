@@ -109,6 +109,9 @@ pub struct App {
     /// the loop. `None` outside it (e.g. in tests, unless injected).
     run_tx: Option<Sender<AppEvent>>,
     should_quit: bool,
+    /// The terminal window/tab title last written, so we only emit the OSC
+    /// escape when it actually changes.
+    title_shown: String,
 }
 
 impl App {
@@ -171,6 +174,7 @@ impl App {
             hover_panel_close: false,
             run_tx: None,
             should_quit: false,
+            title_shown: String::new(),
         };
         app.apply_config();
         app
@@ -993,9 +997,37 @@ impl App {
         self.should_quit
     }
 
+    /// The terminal window/tab title: `VulIDE — <file>` (`•` when unsaved).
+    pub(crate) fn window_title(&self) -> String {
+        let b = self.buf();
+        let name = b
+            .path()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let mark = if b.is_dirty() { " •" } else { "" };
+        format!("VulIDE — {name}{mark}")
+    }
+
+    /// Push the current title to the terminal, but only when it changed.
+    fn sync_window_title(&mut self) {
+        if cfg!(test) {
+            return;
+        }
+        let want = self.window_title();
+        if want != self.title_shown {
+            let _ = ratatui::crossterm::execute!(
+                io::stdout(),
+                ratatui::crossterm::terminal::SetTitle(&want)
+            );
+            self.title_shown = want;
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let events = EventSource::new(TICK);
         self.run_tx = Some(events.sender());
+        self.sync_window_title();
         terminal.draw(|f| ui::draw(f, self))?;
 
         while !self.should_quit {
@@ -1012,6 +1044,7 @@ impl App {
                 dirty |= self.handle_event(ev);
             }
             if dirty {
+                self.sync_window_title();
                 terminal.draw(|f| ui::draw(f, self))?;
             }
         }
