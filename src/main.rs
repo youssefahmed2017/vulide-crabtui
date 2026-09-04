@@ -66,10 +66,12 @@ fn main() -> Result<()> {
         let _ = execute!(std::io::stdout(), EnableMouseCapture);
     }
 
-    if let Some(arg) = arg
-        && let Err(e) = app.open_path(PathBuf::from(arg))
-    {
-        app.set_status(format!("open failed: {e}"));
+    if let Some(arg) = arg {
+        if let Err(e) = app.open_path(PathBuf::from(arg)) {
+            app.set_status(format!("open failed: {e}"));
+        }
+    } else {
+        app.restore_session();
     }
 
     let result = app.run(&mut terminal);

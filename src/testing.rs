@@ -1065,6 +1065,40 @@ mod tests {
     }
 
     #[test]
+    fn session_persists_open_files_and_restores_them() {
+        let a = std::env::temp_dir().join(format!("vulide_sess_a_{}.vul", std::process::id()));
+        let b = std::env::temp_dir().join(format!("vulide_sess_b_{}.vul", std::process::id()));
+        std::fs::write(&a, "G\"a\"\n").unwrap();
+        std::fs::write(&b, "G\"b\"\n").unwrap();
+
+        // Session 1: open both, leave the second active, quit.
+        let mut h1 = Harness::new(80, 12);
+        h1.app.open_path(a.clone()).unwrap();
+        h1.app.open_path(b.clone()).unwrap();
+        assert_eq!(h1.app.active, 1);
+        h1.app.persist_session();
+        let saved = h1.app.config.clone();
+        assert_eq!(saved.session_files.len(), 2);
+        assert_eq!(saved.session_active, 1);
+
+        // Session 2: fresh app on that config, no file arg.
+        let mut h2 = Harness::new(80, 12);
+        h2.app = crate::app::App::with_config(saved);
+        h2.app.restore_session();
+        assert_eq!(h2.app.buffers.len(), 2);
+        assert!(
+            h2.app
+                .buf()
+                .path()
+                .unwrap()
+                .ends_with(b.file_name().unwrap().to_str().unwrap())
+        );
+
+        std::fs::remove_file(&a).ok();
+        std::fs::remove_file(&b).ok();
+    }
+
+    #[test]
     fn config_show_files_builds_the_tree_at_startup() {
         // A persisted `show_files = true` must have a tree ready on the first
         // frame — not an empty box that needs toggling to populate.

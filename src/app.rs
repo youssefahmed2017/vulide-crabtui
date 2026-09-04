@@ -270,6 +270,50 @@ impl App {
         Ok(())
     }
 
+    /// Reopen the files that were open at last exit. Called from `main` only when
+    /// no file was passed on the command line.
+    pub fn restore_session(&mut self) {
+        if !self.config.restore_session {
+            return;
+        }
+        let files = std::mem::take(&mut self.config.session_files);
+        let want_active = self.config.session_active;
+        let mut opened = 0usize;
+        for p in files {
+            if p.is_file() && self.open_file(p).is_ok() {
+                opened += 1;
+            }
+        }
+        if opened > 0 {
+            self.active = want_active.min(self.buffers.len() - 1);
+            self.set_status(format!(
+                "restored {opened} file{}",
+                if opened == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    /// Record the open files + active tab so the next launch can restore them.
+    /// Called once as the event loop exits.
+    pub(crate) fn persist_session(&mut self) {
+        if !self.config.restore_session {
+            return;
+        }
+        let files: Vec<PathBuf> = self
+            .buffers
+            .iter()
+            .filter_map(|b| b.path().map(Path::to_path_buf))
+            .collect();
+        // Active index counted among the saved (path-bearing) buffers only.
+        let active = self.buffers[..self.active]
+            .iter()
+            .filter(|b| b.path().is_some())
+            .count();
+        self.config.session_files = files;
+        self.config.session_active = active;
+        self.save_config();
+    }
+
     fn open_file(&mut self, path: PathBuf) -> io::Result<()> {
         let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
 
@@ -390,6 +434,7 @@ impl App {
             Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
             Entry::new("Toggle Structure Outline (F7)", Cmd::ToggleOutline),
             Entry::new("Toggle File Tree (F2)", Cmd::ToggleFileTree),
+            Entry::new("Toggle Session Restore", Cmd::ToggleSessionRestore),
             Entry::new(
                 "Toggle Mouse (for terminal text selection)",
                 Cmd::ToggleMouse,
@@ -449,6 +494,14 @@ impl App {
                 self.config.word_wrap = !self.config.word_wrap;
                 self.save_config();
                 self.set_status(format!("word wrap: {}", on_off(self.config.word_wrap)));
+            }
+            Cmd::ToggleSessionRestore => {
+                self.config.restore_session = !self.config.restore_session;
+                self.save_config();
+                self.set_status(format!(
+                    "restore session on launch: {}",
+                    on_off(self.config.restore_session)
+                ));
             }
             Cmd::ToggleAutoClose => {
                 self.config.auto_close_brackets = !self.config.auto_close_brackets;
@@ -1236,6 +1289,7 @@ impl App {
             }
         }
         self.run_tx = None;
+        self.persist_session();
         Ok(())
     }
 
