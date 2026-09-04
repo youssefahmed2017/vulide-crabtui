@@ -18,6 +18,7 @@ mod filetree;
 mod lint;
 mod run;
 mod search;
+mod session;
 mod syntax;
 mod theme;
 mod ui;

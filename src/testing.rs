@@ -1164,20 +1164,29 @@ mod tests {
         std::fs::write(&a, "G\"a\"\n").unwrap();
         std::fs::write(&b, "G\"b\"\n").unwrap();
 
-        // Session 1: open both, leave the second active, quit.
+        // Session 1: open both, leave the second active.
         let mut h1 = Harness::new(80, 12);
         h1.app.open_path(a.clone()).unwrap();
         h1.app.open_path(b.clone()).unwrap();
         assert_eq!(h1.app.active, 1);
-        h1.app.persist_session();
-        let saved = h1.app.config.clone();
-        assert_eq!(saved.session_files.len(), 2);
-        assert_eq!(saved.session_active, 1);
+        let state = h1.app.session_state();
+        assert_eq!(state.files.len(), 2);
+        assert_eq!(state.active, 1);
 
-        // Session 2: fresh app on that config, no file arg.
+        // Round-trip the state file (Session::save() is a no-op under cfg!(test)).
+        let sf =
+            std::env::temp_dir().join(format!("vulide_sess_state_{}.toml", std::process::id()));
+        state.save_to(&sf).unwrap();
+        let reloaded = crate::session::Session::load_from(&sf).unwrap();
+        assert_eq!(reloaded, state);
+        std::fs::remove_file(&sf).ok();
+
+        // Session 2: a fresh app reopens what `reloaded` names.
         let mut h2 = Harness::new(80, 12);
-        h2.app = crate::app::App::with_config(saved);
-        h2.app.restore_session();
+        for p in &reloaded.files {
+            h2.app.open_path(p.clone()).unwrap();
+        }
+        h2.app.active = reloaded.active.min(h2.app.buffers.len() - 1);
         assert_eq!(h2.app.buffers.len(), 2);
         assert!(
             h2.app

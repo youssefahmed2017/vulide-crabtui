@@ -273,22 +273,21 @@ impl App {
         Ok(())
     }
 
-    /// Reopen the files that were open at last exit. Called from `main` only when
-    /// no file was passed on the command line.
+    /// Reopen the files from `$XDG_STATE_HOME/vulide/session.toml`. Called from
+    /// `main` only when no file was passed on the command line.
     pub fn restore_session(&mut self) {
         if !self.config.restore_session {
             return;
         }
-        let files = std::mem::take(&mut self.config.session_files);
-        let want_active = self.config.session_active;
+        let saved = crate::session::Session::load();
         let mut opened = 0usize;
-        for p in files {
+        for p in saved.files {
             if p.is_file() && self.open_file(p).is_ok() {
                 opened += 1;
             }
         }
         if opened > 0 {
-            self.active = want_active.min(self.buffers.len() - 1);
+            self.active = saved.active.min(self.buffers.len() - 1);
             self.set_status(format!(
                 "restored {opened} file{}",
                 if opened == 1 { "" } else { "s" }
@@ -296,12 +295,8 @@ impl App {
         }
     }
 
-    /// Record the open files + active tab so the next launch can restore them.
-    /// Called once as the event loop exits.
-    pub(crate) fn persist_session(&mut self) {
-        if !self.config.restore_session {
-            return;
-        }
+    /// The open files + active tab, as a `Session`. Pure — the caller persists.
+    pub(crate) fn session_state(&self) -> crate::session::Session {
         let files: Vec<PathBuf> = self
             .buffers
             .iter()
@@ -312,9 +307,17 @@ impl App {
             .iter()
             .filter(|b| b.path().is_some())
             .count();
-        self.config.session_files = files;
-        self.config.session_active = active;
-        self.save_config();
+        crate::session::Session { files, active }
+    }
+
+    /// Write the current session to disk. Called once as the event loop exits.
+    pub(crate) fn persist_session(&mut self) {
+        if !self.config.restore_session {
+            return;
+        }
+        if let Err(e) = self.session_state().save() {
+            self.set_status(format!("session not saved: {e}"));
+        }
     }
 
     fn open_file(&mut self, path: PathBuf) -> io::Result<()> {

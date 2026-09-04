@@ -33,11 +33,9 @@ pub struct Config {
     pub recent_files: Vec<PathBuf>,
     pub recent_files_limit: usize,
     /// Reopen the previous session's files on launch (when no file is given).
+    /// The file list itself lives in `$XDG_STATE_HOME/vulide/session.toml`
+    /// (see `crate::session`), not here.
     pub restore_session: bool,
-    /// Files open at last exit and which one was active — written on quit,
-    /// consumed on the next launch. Not meant to be hand-edited.
-    pub session_files: Vec<PathBuf>,
-    pub session_active: usize,
     /// Explicit interpreter path for Phase 4's run console (`""` = autodetect).
     pub vulpin_path: String,
 }
@@ -59,8 +57,6 @@ impl Default for Config {
             recent_files: Vec::new(),
             recent_files_limit: 10,
             restore_session: true,
-            session_files: Vec::new(),
-            session_active: 0,
             vulpin_path: String::new(),
         }
     }
