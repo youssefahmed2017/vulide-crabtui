@@ -1065,6 +1065,36 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_python_file_switches_grammar_and_status() {
+        let path = std::env::temp_dir().join(format!("vulide_py_{}.py", std::process::id()));
+        std::fs::write(&path, "def greet(name):\n    return $undef\n").unwrap();
+        let mut h = Harness::new(80, 12);
+        h.app.open_path(path.clone()).unwrap();
+        h.draw();
+
+        assert!(h.contains(" Python "), "status bar:\n{}", h.line(11));
+        // `def` is a keyword → theme.keyword colour on the first cell
+        assert_eq!(h.cell(4, 0).fg, h.app.theme.keyword); // past the 4-col gutter
+        // the Vulpin `$undef` lint must NOT fire on a Python buffer
+        assert!(h.app.diagnostics.is_empty(), "no Vulpin lint off-grammar");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unknown_extension_renders_plain() {
+        let path = std::env::temp_dir().join(format!("vulide_sh_{}.sh", std::process::id()));
+        std::fs::write(&path, "if true; then echo hi; fi\n").unwrap();
+        let mut h = Harness::new(80, 10);
+        h.app.open_path(path.clone()).unwrap();
+        h.draw();
+        assert!(h.contains(" Plain "));
+        // `if` gets no keyword colour — falls back to plain fg
+        assert_eq!(h.cell(4, 0).fg, h.app.theme.fg);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
     fn session_persists_open_files_and_restores_them() {
         let a = std::env::temp_dir().join(format!("vulide_sess_a_{}.vul", std::process::id()));
         let b = std::env::temp_dir().join(format!("vulide_sess_b_{}.vul", std::process::id()));

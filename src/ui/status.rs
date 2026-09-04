@@ -36,6 +36,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
+    let lang = format!(" {} ", app.buf().language().label());
     let pos = format!(" {tab_of}Ln {}, Col {} ", cursor.line + 1, cursor.col + 1);
 
     let left = if app.status.is_empty() {
@@ -57,6 +58,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let used = btn_label.chars().count()
         + left.chars().count()
         + warn.chars().count()
+        + lang.chars().count()
         + pos.chars().count();
     let gap = (area.width as usize).saturating_sub(used);
     let line = Line::from(vec![
@@ -64,6 +66,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(left, accent),
         Span::styled(" ".repeat(gap), base),
         Span::styled(warn, warn_style),
+        Span::styled(lang, base),
         Span::styled(pos, base),
     ]);
 

@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::buffer::movement;
 use crate::buffer::{Buffer, Position};
-use crate::syntax::{Tokenizer, vulpin::VulpinTokenizer};
+use crate::syntax::Language;
 use crate::theme::Theme;
 
 const GUTTER_MIN: u16 = 4;
@@ -53,7 +53,7 @@ pub fn render(
     let selection = buf.selection();
     let bracket_match = buf.matching_bracket();
     let cursor_bracket = bracket_pair_at(buf, cursor);
-    let tokenizer = VulpinTokenizer;
+    let language = buf.language();
 
     let mut lines: Vec<Line> = Vec::with_capacity(text_h);
     for row in 0..text_h {
@@ -86,7 +86,7 @@ pub fn render(
             search_current,
             diagnostics,
             theme,
-            &tokenizer,
+            language,
         ));
         lines.push(Line::from(spans));
     }
@@ -141,14 +141,14 @@ fn styled_text(
     search_current: usize,
     diagnostics: &[(Position, Position)],
     theme: &Theme,
-    tokenizer: &VulpinTokenizer,
+    language: Language,
 ) -> Vec<Span<'static>> {
     let base_bg = if is_current {
         theme.current_line
     } else {
         theme.bg
     };
-    let tokens = tokenizer.tokenize_line(text);
+    let tokens = language.tokenize_line(text);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut group = String::new();

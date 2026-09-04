@@ -155,6 +155,7 @@ impl Theme {
             TokenKind::Function => self.function,
             TokenKind::Command => self.command,
             TokenKind::Control => self.control,
+            TokenKind::Keyword => self.keyword,
             TokenKind::Operator => self.operator,
             TokenKind::Bracket => self.bracket,
             TokenKind::Text => return None,

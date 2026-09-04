@@ -63,10 +63,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let editor_row = chunks[i];
     i += 1;
 
-    // The outline is a pure function of the buffer — rebuild it every frame. The
-    // file tree is disk I/O and is built once in `toggle_files`, mutated on
-    // expand/collapse; never rebuilt here.
-    app.algo_items = if show_algo {
+    // The outline + the undefined-var lint are Vulpin-specific grammar — off for
+    // Python / Rust / C / plain buffers. The outline is a pure function of the
+    // buffer so it's rebuilt every frame; the file tree is disk I/O and is built
+    // once in `toggle_files`, never here.
+    let is_vulpin = app.buffers[app.active].language() == crate::syntax::Language::Vulpin;
+    app.algo_items = if show_algo && is_vulpin {
         crate::algo::outline(&app.buffers[app.active])
     } else {
         Vec::new()
@@ -165,7 +167,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.files_scroll = 0;
     }
 
-    app.diagnostics = crate::lint::check(&app.buffers[app.active]);
+    app.diagnostics = if is_vulpin {
+        crate::lint::check(&app.buffers[app.active])
+    } else {
+        Vec::new()
+    };
 
     app.editor_rows = editor_area.height as usize;
     let show_numbers = app.config.show_line_numbers;

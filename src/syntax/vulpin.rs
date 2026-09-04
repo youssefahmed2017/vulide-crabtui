@@ -13,7 +13,7 @@
 //!
 //! `!` (raw Python) lines get generic colouring, same as the Python IDE.
 
-use super::{Token, TokenKind, Tokenizer};
+use super::{Token, TokenKind};
 
 /// Statement command letters — every `case` in Vulpin's `parseStatement`
 /// (`Vulpin/src/parser.c`). Includes `O` (FOR), which the Python IDE missed.
@@ -23,14 +23,6 @@ const COMMAND_CHARS: &str = "GPQXEDKAFRLJWVNZTCYOUS";
 const CONTROL_CHARS: &str = "?:;@&~";
 /// Operators the parser lexes: `+ - * / % < >` and two-char `<= >= == !=`.
 const OPERATOR_CHARS: &str = "+-*/%<>=!";
-
-pub struct VulpinTokenizer;
-
-impl Tokenizer for VulpinTokenizer {
-    fn tokenize_line(&self, line: &str) -> Vec<Token> {
-        tokenize(line)
-    }
-}
 
 pub fn tokenize(line: &str) -> Vec<Token> {
     let chars: Vec<char> = line.chars().collect();

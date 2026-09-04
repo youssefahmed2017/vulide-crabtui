@@ -15,6 +15,8 @@ use ropey::Rope;
 use history::History;
 use movement as mv;
 
+use crate::syntax::Language;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Position {
     pub line: usize,
@@ -35,6 +37,8 @@ pub struct Buffer {
     anchor: Option<Position>,
     goal_col: Option<usize>,
     path: Option<PathBuf>,
+    /// Grammar for highlighting — from the file extension, Vulpin for untitled.
+    language: Language,
     history: History,
     pub tab_width: usize,
     /// Type a matching `)]}"` when an opener is inserted (config-driven).
@@ -63,6 +67,7 @@ impl Buffer {
             anchor: None,
             goal_col: None,
             path: None,
+            language: Language::Vulpin,
             history: History::new(),
             tab_width: 4,
             auto_close_brackets: false,
@@ -85,6 +90,7 @@ impl Buffer {
         }
         let mut buf = Self::from_str(&text);
         buf.path = Some(path.to_path_buf());
+        buf.language = Language::from_path(path);
         Ok(buf)
     }
 
@@ -104,6 +110,7 @@ impl Buffer {
         }
         fs::write(path, text)?;
         self.path = Some(path.to_path_buf());
+        self.language = Language::from_path(path);
         self.saved = self.rope.clone();
         self.history.set_break();
         Ok(())
@@ -121,6 +128,10 @@ impl Buffer {
 
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    pub fn language(&self) -> Language {
+        self.language
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -626,6 +637,25 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert_eq!(b.line_count(), 2);
         assert_eq!(b.line_text(1), "G\"b\"");
+    }
+
+    #[test]
+    fn language_is_picked_from_the_extension() {
+        assert_eq!(Buffer::from_str("").language(), Language::Vulpin); // untitled
+        let dir = std::env::temp_dir();
+        for (ext, want) in [
+            ("vul", Language::Vulpin),
+            ("py", Language::Python),
+            ("rs", Language::Rust),
+            ("c", Language::C),
+            ("sh", Language::Plain),
+            ("ps1", Language::Plain),
+        ] {
+            let p = dir.join(format!("vulide_lang_{}_{}.{ext}", std::process::id(), ext));
+            std::fs::write(&p, "x\n").unwrap();
+            assert_eq!(Buffer::open(&p).unwrap().language(), want, "for .{ext}");
+            std::fs::remove_file(&p).ok();
+        }
     }
 
     #[test]

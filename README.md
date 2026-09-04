@@ -47,8 +47,11 @@ Requires a recent stable Rust (edition 2024). The Vulpin interpreter is found vi
 - **Editor** — rope-backed buffer, grapheme/display-column movement, undo/redo
   with coalescing, selection, auto-indent on Vulpin block openers, bracket
   matching and auto-close.
-- **Syntax highlighting** — a hand-written scanner matching `Vulpin/src/parser.c`
-  (includes `O` FOR, the real operator set, no string escapes).
+- **Syntax highlighting** — a hand-written Vulpin scanner matching
+  `Vulpin/src/parser.c` (includes `O` FOR, the real operator set, no string
+  escapes), plus keyword/string/comment highlighting for Python, Rust and C
+  picked by extension. Unknown extensions render plain. Current grammar shows in
+  the status bar.
 - **Themes** — a 40-role theme system, 6 bundled themes, live-preview picker.
   Config at `~/.config/vulide/config.toml`.
 - **Autocomplete** — pops as you type: `$name` → variables and user functions
