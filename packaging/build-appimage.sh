@@ -16,7 +16,7 @@ APPIMAGETOOL="${APPIMAGETOOL:-appimagetool}"
 rustup target add "$TARGET" >/dev/null 2>&1 || true
 cargo build --release --target "$TARGET"
 
-VER="0.1.0-g$(git rev-parse --short HEAD)"
+VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-g$(git rev-parse --short HEAD)"
 mkdir -p "$APPDIR/usr/bin" \
          "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps"

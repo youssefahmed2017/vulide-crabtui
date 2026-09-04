@@ -17,7 +17,7 @@ DIST="$(pwd)/../dist"
 rustup target add "$TARGET" >/dev/null 2>&1 || true
 cargo zigbuild --release --target "$TARGET"
 
-VER="0.1.0-g$(git rev-parse --short HEAD)"
+VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-g$(git rev-parse --short HEAD)"
 STAGE="$(mktemp -d)/VulIDE"
 mkdir -p "$STAGE"
 # The release profile + linker already strip this; host `strip` can't read a
