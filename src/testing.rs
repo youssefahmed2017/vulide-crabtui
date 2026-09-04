@@ -1212,6 +1212,28 @@ mod tests {
     }
 
     #[test]
+    fn tree_shows_a_scrollbar_when_it_overflows() {
+        let dir = std::env::temp_dir().join(format!("vulide_ftsb_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..40 {
+            std::fs::write(dir.join(format!("f{i:02}.vul")), "Q\n").unwrap();
+        }
+        let mut h = Harness::new(80, 10); // ~6 body rows for 40 entries
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+        h.key(KeyCode::F(2));
+        let r = h.app.files_rect.expect("tree rect");
+        // some cell on the right border column is a scrollbar glyph, not the box rule
+        let col = r.x + r.width - 1;
+        let has_bar = (r.y + 1..r.y + r.height - 1).any(|y| {
+            let s = h.cell(col, y).symbol().to_string();
+            s == "\u{2588}" || s == "\u{2502}"
+        });
+        assert!(has_bar, "scrollbar drawn:\n{}", h.screen());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn narrow_terminal_hides_the_file_tree() {
         let dir = tree_fixture("narrow");
         let mut narrow = Harness::new(40, 16);

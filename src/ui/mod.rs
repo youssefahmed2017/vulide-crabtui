@@ -203,6 +203,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             app.focus == Focus::Files,
             fa,
         );
+        let n = app.file_tree.as_ref().map(|t| t.len()).unwrap_or(0);
+        sidebar_scrollbar(f, &app.theme, fa, n, app.files_scroll);
     }
 
     if let Some(aa) = algo_area {
@@ -215,6 +217,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             app.focus == Focus::Algo,
             aa,
         );
+        sidebar_scrollbar(f, &app.theme, aa, app.algo_items.len(), app.algo_scroll);
     }
 
     if let Some(s) = splitter_area {
@@ -279,6 +282,41 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Overlay::Help(h) => Some(help::render(f, h, &app.theme, area)),
         Overlay::None => None,
     };
+}
+
+/// A thin vertical scrollbar on the right border of a bordered sidebar `area`,
+/// drawn only when `total` rows overflow the (area minus borders) viewport.
+pub(crate) fn sidebar_scrollbar(
+    f: &mut Frame,
+    theme: &crate::theme::Theme,
+    area: Rect,
+    total: usize,
+    offset: usize,
+) {
+    use ratatui::style::Style;
+    use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+
+    let viewport = area.height.saturating_sub(2) as usize;
+    if viewport == 0 || total <= viewport {
+        return;
+    }
+    // Inset by the border rows so the thumb never lands on a corner glyph.
+    let track = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height - 2,
+    };
+    let mut state = ScrollbarState::new(total)
+        .position(offset)
+        .viewport_content_length(viewport);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_style(Style::default().fg(theme.scrollbar).bg(theme.dock_bg))
+        .track_style(Style::default().fg(theme.dock_fg).bg(theme.dock_bg));
+    f.render_stateful_widget(bar, track, &mut state);
 }
 
 /// Smallest scroll offset that keeps row `sel` within a `h`-tall viewport.
