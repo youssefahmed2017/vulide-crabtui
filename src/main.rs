@@ -14,6 +14,7 @@ mod buffer;
 mod complete;
 mod config;
 mod event;
+mod filetree;
 mod lint;
 mod run;
 mod search;

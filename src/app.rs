@@ -40,6 +40,8 @@ pub enum Focus {
     Output,
     /// The structure-outline sidebar (`F7`).
     Algo,
+    /// The file-tree sidebar (`F2`).
+    Files,
 }
 
 pub struct App {
@@ -72,6 +74,16 @@ pub struct App {
     /// Index of the first outline row drawn (kept so mouse clicks map to rows).
     pub algo_scroll: usize,
     pub algo_rect: Option<Rect>,
+
+    // ---- file tree (F2) ----
+    pub show_files: bool,
+    /// Built when the sidebar first opens; never rebuilt per frame (it is disk
+    /// I/O). Mutated on expand/collapse/refresh.
+    pub file_tree: Option<crate::filetree::FileTree>,
+    pub files_selected: usize,
+    /// Index of the first tree row drawn (kept so mouse clicks map to rows).
+    pub files_scroll: usize,
+    pub files_rect: Option<Rect>,
 
     // ---- find / replace ----
     /// The find/replace bar, present while it is open.
@@ -134,6 +146,7 @@ impl App {
             .unwrap_or(0);
         let theme = themes[theme_idx].clone();
         let show_algo = config.show_algo;
+        let show_files = config.show_files;
 
         let mut app = Self {
             buffers: vec![Buffer::new()],
@@ -156,6 +169,11 @@ impl App {
             algo_selected: 0,
             algo_scroll: 0,
             algo_rect: None,
+            show_files,
+            file_tree: None,
+            files_selected: 0,
+            files_scroll: 0,
+            files_rect: None,
             search: None,
             search_matches: Vec::new(),
             search_idx: 0,
@@ -177,6 +195,13 @@ impl App {
             title_shown: String::new(),
         };
         app.apply_config();
+        // The outline is rebuilt every draw, but the file tree is disk I/O and
+        // is built on demand — so a persisted `show_files = true` has to build it
+        // now, or the sidebar would open empty until toggled a few times.
+        if app.show_files {
+            let root = app.file_tree_root();
+            app.file_tree = Some(crate::filetree::FileTree::new(&root));
+        }
         app
     }
 
@@ -364,6 +389,7 @@ impl App {
             Entry::new("Toggle Word Wrap", Cmd::ToggleWordWrap),
             Entry::new("Toggle Auto-close Brackets", Cmd::ToggleAutoClose),
             Entry::new("Toggle Structure Outline (F7)", Cmd::ToggleOutline),
+            Entry::new("Toggle File Tree (F2)", Cmd::ToggleFileTree),
             Entry::new(
                 "Toggle Mouse (for terminal text selection)",
                 Cmd::ToggleMouse,
@@ -434,6 +460,7 @@ impl App {
                 ));
             }
             Cmd::ToggleOutline => self.toggle_algo(),
+            Cmd::ToggleFileTree => self.toggle_files(),
             Cmd::ToggleMouse => {
                 self.config.mouse = !self.config.mouse;
                 self.save_config();
@@ -636,6 +663,139 @@ impl App {
         }
         let idx = self.algo_scroll + (row - body_top) as usize;
         (idx < self.algo_items.len()).then_some(idx)
+    }
+
+    // ---- file tree ----
+
+    /// Where the tree roots: the active file's directory, else the working dir.
+    fn file_tree_root(&self) -> PathBuf {
+        self.buf()
+            .path()
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf)
+            .filter(|p| !p.as_os_str().is_empty())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// `F2` cycles the file tree, same three states as the outline: hidden →
+    /// shown+focused → shown+unfocused → focused → hidden.
+    fn toggle_files(&mut self) {
+        if self.file_tree.is_none() {
+            let root = self.file_tree_root();
+            self.file_tree = Some(crate::filetree::FileTree::new(&root));
+            self.files_selected = 0;
+        }
+        if !self.show_files {
+            self.show_files = true;
+            self.focus = Focus::Files;
+            self.set_status(
+                "files — ↑↓ move · → ← expand/collapse · Enter open · r refresh · . hidden · F2 hide",
+            );
+        } else if self.focus != Focus::Files {
+            self.focus = Focus::Files;
+        } else {
+            self.show_files = false;
+            self.focus = Focus::Editor;
+            self.set_status("file tree hidden");
+        }
+        self.config.show_files = self.show_files;
+        self.save_config();
+    }
+
+    /// Keystrokes while the file tree has focus.
+    fn handle_files_key(&mut self, key: KeyEvent) {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Char('c') => self.should_quit = true,
+                KeyCode::Char('p') => self.open_palette(),
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                self.focus = Focus::Editor;
+                return;
+            }
+            KeyCode::Enter => {
+                self.activate_selected_file();
+                return;
+            }
+            _ => {}
+        }
+        let Some(tree) = &mut self.file_tree else {
+            return;
+        };
+        let n = tree.len();
+        let sel = &mut self.files_selected;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => *sel = sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                if *sel + 1 < n {
+                    *sel += 1;
+                }
+            }
+            KeyCode::Home => *sel = 0,
+            KeyCode::End => *sel = n.saturating_sub(1),
+            KeyCode::Right | KeyCode::Char('l') => match tree.get(*sel) {
+                Some(r) if r.is_dir && !r.expanded => tree.expand(*sel),
+                // already-open dir: step into it
+                Some(r) if r.is_dir && *sel + 1 < n => *sel += 1,
+                _ => {}
+            },
+            KeyCode::Left | KeyCode::Char('h') => match tree.get(*sel) {
+                Some(r) if r.is_dir && r.expanded => tree.collapse(*sel),
+                _ => {
+                    if let Some(p) = tree.parent_of(*sel) {
+                        *sel = p;
+                    }
+                }
+            },
+            KeyCode::Char('r') => tree.refresh(),
+            KeyCode::Char('.') => tree.toggle_hidden(),
+            _ => {}
+        }
+    }
+
+    /// Enter / click on the selected tree row: open a file, or expand/collapse a
+    /// directory (staying in the tree).
+    fn activate_selected_file(&mut self) {
+        let (is_dir, expanded, path) = match self
+            .file_tree
+            .as_ref()
+            .and_then(|t| t.get(self.files_selected))
+        {
+            Some(r) => (r.is_dir, r.expanded, r.path.clone()),
+            None => return,
+        };
+        if is_dir {
+            if let Some(t) = &mut self.file_tree {
+                if expanded {
+                    t.collapse(self.files_selected);
+                } else {
+                    t.expand(self.files_selected);
+                }
+            }
+            return;
+        }
+        match self.open_file(path) {
+            Ok(()) => self.focus = Focus::Editor,
+            Err(e) => self.set_status(format!("open failed: {e}")),
+        }
+    }
+
+    /// The tree row under screen row `row`, if the click landed on one.
+    fn files_row_at(&self, row: u16) -> Option<usize> {
+        let r = self.files_rect?;
+        let body_top = r.y + 1; // top border
+        let body_bot = r.y + r.height.saturating_sub(1); // bottom border
+        if row < body_top || row >= body_bot {
+            return None;
+        }
+        let idx = self.files_scroll + (row - body_top) as usize;
+        let n = self.file_tree.as_ref().map(|t| t.len()).unwrap_or(0);
+        (idx < n).then_some(idx)
     }
 
     /// Label for the status-bar button; `is_running` also decides its colour.
@@ -847,6 +1007,20 @@ impl App {
                 }
                 return true;
             }
+            MouseEventKind::ScrollUp
+                if self.files_rect.is_some_and(|r| hit(r, col, row))
+                    && self.file_tree.as_ref().is_some_and(|t| !t.is_empty()) =>
+            {
+                self.files_selected = self.files_selected.saturating_sub(1);
+                return true;
+            }
+            MouseEventKind::ScrollDown if self.files_rect.is_some_and(|r| hit(r, col, row)) => {
+                let n = self.file_tree.as_ref().map(|t| t.len()).unwrap_or(0);
+                if self.files_selected + 1 < n {
+                    self.files_selected += 1;
+                }
+                return true;
+            }
             MouseEventKind::Down(MouseButton::Left) => {}
             _ => return false,
         }
@@ -898,6 +1072,19 @@ impl App {
                 self.dismiss_search_on_switch();
             }
             self.focus = Focus::Editor;
+            return true;
+        }
+
+        // File tree: a click on a row opens the file / toggles the folder;
+        // elsewhere in the panel just focuses it.
+        if self.files_rect.is_some_and(|r| hit(r, col, row)) {
+            match self.files_row_at(row) {
+                Some(i) => {
+                    self.files_selected = i;
+                    self.activate_selected_file();
+                }
+                None => self.focus = Focus::Files,
+            }
             return true;
         }
 
@@ -1219,6 +1406,7 @@ impl App {
             KeyCode::F(5) => return self.start_run(),
             KeyCode::F(6) => return self.toggle_output_focus(),
             KeyCode::F(7) => return self.toggle_algo(),
+            KeyCode::F(2) => return self.toggle_files(),
             KeyCode::F(1) => return self.open_help(),
             _ => {}
         }
@@ -1228,6 +1416,10 @@ impl App {
         }
         if self.focus == Focus::Algo {
             self.handle_algo_key(key);
+            return;
+        }
+        if self.focus == Focus::Files {
+            self.handle_files_key(key);
             return;
         }
         if self.search.is_some() {

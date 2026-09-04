@@ -74,6 +74,10 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+P", "command palette"),
             ("Ctrl+T", "theme picker (live preview)"),
             (
+                "F2",
+                "file tree — ↑↓ select, → / ← expand / collapse, Enter opens, r refresh, . hidden",
+            ),
+            (
                 "F7",
                 "structure outline — ↑↓ select, Enter jumps to the line",
             ),

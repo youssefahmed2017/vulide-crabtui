@@ -1035,6 +1035,146 @@ mod tests {
         assert!(narrow.app.editor_rect.width > 0);
     }
 
+    // ---- file tree (F2) ----
+
+    fn tree_fixture(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vulide_ft_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        std::fs::write(dir.join("main.vul"), "G\"hi\"\n").unwrap();
+        std::fs::write(dir.join("readme.txt"), "x").unwrap();
+        std::fs::write(dir.join("lib").join("util.vul"), "Q\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn f2_shows_the_file_tree_with_directory_contents() {
+        let dir = tree_fixture("show");
+        let mut h = Harness::new(80, 20);
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+
+        h.key(KeyCode::F(2));
+        assert!(h.app.show_files);
+        assert_eq!(h.app.focus, crate::app::Focus::Files);
+        assert!(h.contains("Files"), "sidebar title:\n{}", h.screen());
+        assert!(h.contains("lib"), "dir listed:\n{}", h.screen());
+        assert!(h.contains("main.vul"), "file listed:\n{}", h.screen());
+        assert!(h.contains("readme.txt"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_show_files_builds_the_tree_at_startup() {
+        // A persisted `show_files = true` must have a tree ready on the first
+        // frame — not an empty box that needs toggling to populate.
+        let cfg = Config {
+            show_files: true,
+            ..Config::default()
+        };
+        let app = App::with_config(cfg);
+        assert!(app.show_files);
+        assert!(app.file_tree.is_some(), "tree built at startup");
+    }
+
+    #[test]
+    fn enter_on_a_vul_file_opens_it_in_the_editor() {
+        let dir = tree_fixture("open");
+        let mut h = Harness::new(80, 20);
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+        h.key(KeyCode::F(2));
+
+        // rows: "lib" (dir), "main.vul", "readme.txt" — step past the dir.
+        h.key(KeyCode::Down);
+        assert_eq!(h.app.file_tree.as_ref().unwrap().rows()[1].name, "main.vul");
+        h.key(KeyCode::Enter);
+
+        assert_eq!(h.app.focus, crate::app::Focus::Editor);
+        assert!(
+            h.app.buf().path().unwrap().ends_with("main.vul"),
+            "opened: {:?}",
+            h.app.buf().path()
+        );
+        assert_eq!(h.app.buf().rope().to_string(), "G\"hi\"");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn right_arrow_expands_a_directory_then_left_collapses() {
+        let dir = tree_fixture("expand");
+        let mut h = Harness::new(80, 20);
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+        h.key(KeyCode::F(2));
+
+        assert_eq!(h.app.file_tree.as_ref().unwrap().len(), 3); // lib, main.vul, readme.txt
+        h.key(KeyCode::Right); // expand "lib"
+        let names: Vec<String> = h
+            .app
+            .file_tree
+            .as_ref()
+            .unwrap()
+            .rows()
+            .iter()
+            .map(|r| r.name.clone())
+            .collect();
+        assert_eq!(names, vec!["lib", "util.vul", "main.vul", "readme.txt"]);
+        assert!(h.contains("util.vul"), "child on screen:\n{}", h.screen());
+
+        h.key(KeyCode::Left); // collapse "lib"
+        assert_eq!(h.app.file_tree.as_ref().unwrap().len(), 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn f2_and_f7_stack_in_the_left_column() {
+        let dir = tree_fixture("stack");
+        let mut h = Harness::with_text("F a()\n~\n", 90, 24);
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+
+        h.key(KeyCode::F(2));
+        h.key(KeyCode::F(7));
+        h.draw();
+
+        let fr = h.app.files_rect.expect("file tree rect");
+        let ar = h.app.algo_rect.expect("outline rect");
+        assert_eq!(fr.x, ar.x, "same column");
+        assert!(fr.y < ar.y, "file tree above the outline");
+        assert!(fr.height >= 5);
+        assert!(h.contains("Files") && h.contains("Outline"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn narrow_terminal_hides_the_file_tree() {
+        let dir = tree_fixture("narrow");
+        let mut narrow = Harness::new(40, 16);
+        narrow.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+        narrow.app.show_files = true;
+        narrow.draw();
+        assert!(narrow.app.files_rect.is_none(), "hidden below min width");
+        assert!(narrow.app.editor_rect.width > 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn clicking_a_tree_row_opens_that_file() {
+        let dir = tree_fixture("click");
+        let mut h = Harness::new(80, 20);
+        h.app.file_tree = Some(crate::filetree::FileTree::new(&dir));
+        h.key(KeyCode::F(2));
+
+        let r = h.app.files_rect.expect("tree rect");
+        // body rows start at r.y + 1: lib, main.vul, readme.txt
+        h.click(r.x + 2, r.y + 2); // "main.vul"
+        assert!(h.app.buf().path().unwrap().ends_with("main.vul"));
+        assert_eq!(h.app.focus, crate::app::Focus::Editor);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn hovering_a_tab_marks_it() {
         let mut h = Harness::new(70, 14);

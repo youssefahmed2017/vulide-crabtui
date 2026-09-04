@@ -37,6 +37,7 @@ pub enum Cmd {
     ToggleWordWrap,
     ToggleAutoClose,
     ToggleOutline,
+    ToggleFileTree,
     ToggleMouse,
     ReloadConfig,
     OpenRecent(PathBuf),

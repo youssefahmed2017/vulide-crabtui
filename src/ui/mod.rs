@@ -6,6 +6,7 @@
 
 pub mod algo;
 pub mod editor;
+pub mod filetree;
 pub mod help;
 pub mod overlay;
 pub mod palette;
@@ -24,16 +25,18 @@ use overlay::Overlay;
 
 /// Minimum rows the editor keeps when the panel is open / being resized.
 pub const MIN_EDITOR_ROWS: u16 = 3;
-/// Below this total width the outline sidebar hides itself rather than starve
-/// the editor of columns.
-pub const ALGO_MIN_TOTAL_WIDTH: u16 = 56;
+/// Below this total width a left sidebar (outline or file tree) hides itself
+/// rather than starve the editor of columns.
+pub const SIDEBAR_MIN_TOTAL_WIDTH: u16 = 56;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     let show_tabs = app.buffers.len() > 1;
     let show_panel = app.run.is_some();
     let show_search = app.search.is_some();
-    let show_algo = app.show_algo && area.width >= ALGO_MIN_TOTAL_WIDTH;
+    let show_algo = app.show_algo && area.width >= SIDEBAR_MIN_TOTAL_WIDTH;
+    let show_files = app.show_files && area.width >= SIDEBAR_MIN_TOTAL_WIDTH;
+    let show_sidebar = show_algo || show_files;
 
     let mut rows = Vec::new();
     if show_tabs {
@@ -59,13 +62,41 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     let editor_row = chunks[i];
     i += 1;
-    let (algo_area, editor_area) = if show_algo {
-        let w = (area.width / 4).clamp(18, 32);
+
+    // The outline is a pure function of the buffer — rebuild it every frame. The
+    // file tree is disk I/O and is built once in `toggle_files`, mutated on
+    // expand/collapse; never rebuilt here.
+    app.algo_items = if show_algo {
+        crate::algo::outline(&app.buffers[app.active])
+    } else {
+        Vec::new()
+    };
+
+    let (sidebar_col, editor_area) = if show_sidebar {
+        let w = if show_files {
+            (area.width / 4).clamp(22, 36)
+        } else {
+            (area.width / 4).clamp(18, 32)
+        };
         let cols =
             Layout::horizontal([Constraint::Length(w), Constraint::Min(20)]).split(editor_row);
         (Some(cols[0]), cols[1])
     } else {
         (None, editor_row)
+    };
+
+    // Layout A: file tree on top, outline below. The outline takes only the rows
+    // it needs (clamped), so an empty outline can't eat the column and a huge one
+    // can't starve the tree.
+    let (files_area, algo_area) = match sidebar_col {
+        Some(col) if show_files && show_algo => {
+            let algo_h = (app.algo_items.len() as u16 + 2).clamp(5, (col.height / 2).max(5));
+            let v = Layout::vertical([Constraint::Min(5), Constraint::Length(algo_h)]).split(col);
+            (Some(v[0]), Some(v[1]))
+        }
+        Some(col) if show_files => (Some(col), None),
+        Some(col) => (None, Some(col)),
+        None => (None, None),
     };
     let (splitter_area, panel_area) = if show_panel {
         let s = chunks[i];
@@ -90,10 +121,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     app.panel_rect = panel_area;
     app.search_rect = search_area;
     app.algo_rect = algo_area;
+    app.files_rect = files_area;
 
-    // Rebuild the outline (cheap) and keep the selection/scroll consistent.
+    // Keep the outline selection / scroll consistent (items already rebuilt).
     if show_algo {
-        app.algo_items = crate::algo::outline(&app.buffers[app.active]);
         let n = app.algo_items.len();
         if app.algo_selected >= n {
             app.algo_selected = n.saturating_sub(1);
@@ -103,8 +134,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             .unwrap_or(0);
         app.algo_scroll = scroll_into_view(app.algo_selected, app.algo_scroll, body_h);
     } else {
-        app.algo_items.clear();
         app.algo_scroll = 0;
+    }
+
+    // Same for the file tree (its rows live in `app.file_tree`).
+    if let Some(fa) = files_area {
+        let n = app.file_tree.as_ref().map(|t| t.len()).unwrap_or(0);
+        if app.files_selected >= n {
+            app.files_selected = n.saturating_sub(1);
+        }
+        let body_h = fa.height.saturating_sub(2) as usize;
+        app.files_scroll = scroll_into_view(app.files_selected, app.files_scroll, body_h);
+    } else {
+        app.files_scroll = 0;
     }
 
     app.diagnostics = crate::lint::check(&app.buffers[app.active]);
@@ -128,6 +170,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         &diag_ranges,
         editor_area,
     );
+
+    if let Some(fa) = files_area {
+        filetree::render(
+            f,
+            app.file_tree.as_ref(),
+            app.files_selected,
+            app.files_scroll,
+            &app.theme,
+            app.focus == Focus::Files,
+            fa,
+        );
+    }
 
     if let Some(aa) = algo_area {
         algo::render(

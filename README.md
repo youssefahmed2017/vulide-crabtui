@@ -35,6 +35,7 @@ Requires a recent stable Rust (edition 2024). The Vulpin interpreter is found vi
 | autocomplete | `$vars` · functions · `.U/.L/.S/.T/.C` · command hints — `Enter` or `Tab` accepts |
 | `F5` | run the current file |
 | `F6` | toggle focus editor ↔ output |
+| `F2` | file tree — `↑↓` select, `→`/`←` expand/collapse, `Enter` opens, `r` refresh, `.` hidden |
 | `F7` | structure outline — `↑↓` select, `Enter` jumps to the line |
 | `Ctrl+P` | command palette |
 | `Ctrl+T` | theme picker (live preview) |
@@ -55,6 +56,9 @@ Requires a recent stable Rust (edition 2024). The Vulpin interpreter is found vi
   a one-line reminder.
 - **Find / replace** — incremental, highlights every match, wraps, one-undo-step
   replace-all. Docks below the editor.
+- **File tree** (`F2`) — a lazily-expanded directory view in the left column,
+  rooted at the open file's folder (or the working dir). `Enter` / click opens a
+  file in a tab or toggles a folder. Stacks above the outline when both are on.
 - **Structure outline** (`F7`) — functions, loops, conditionals, switch/try
   blocks, labels, jumps, returns, indented by nesting; tolerant of half-typed
   code. `Enter` or click jumps the editor there.
@@ -64,6 +68,7 @@ Requires a recent stable Rust (edition 2024). The Vulpin interpreter is found vi
   stdout/stderr with line-buffered stdin.
 - **Mouse layer** — all optional: run button, draggable splitter, tab
   click/close, click-to-focus, click-away-to-dismiss.
+- Sets the **terminal window title** to `VulIDE — <file>` (`•` while unsaved).
 
 ## Packaging
 
@@ -74,8 +79,8 @@ the scripts for the toolchain.
 ## Status
 
 v1 (`v0.1.0`) is complete — code editor, tabs, Vulpin syntax, run console, and the
-algorithm/structure viewer. Out of scope for v1: modal editing, soft word-wrap, a
-filesystem picker overlay.
+algorithm/structure viewer. Post-v1 work on this branch: terminal title, file
+tree. Still open: modal editing, soft word-wrap.
 
 ## License
 
