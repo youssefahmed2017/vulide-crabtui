@@ -2,6 +2,10 @@
 name = "vulide"
 version = "0.1.0"
 edition = "2024"
+description = "A terminal UI for the Vulpin language"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/youssefahmed2017/vulide-crabtui"
 
 [dependencies]
 anyhow = "1.0.104"
