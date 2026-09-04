@@ -165,6 +165,12 @@ impl Harness {
         self.screen().contains(needle)
     }
 
+    /// The terminal cursor position `(x, y)` after the last draw.
+    pub fn cursor_xy(&self) -> (u16, u16) {
+        let p = self.terminal.backend().cursor_position();
+        (p.x, p.y)
+    }
+
     /// The rendered cell at `(x, y)` — for asserting on colour/style.
     pub fn cell(&self, x: u16, y: u16) -> ratatui::buffer::Cell {
         self.terminal
@@ -535,6 +541,63 @@ mod tests {
         assert_eq!(h.app.buffers.len(), 2);
         assert_eq!(h.app.buf().rope().to_string(), "G\"from disk\"");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn word_wrap_flows_a_long_line_onto_several_rows() {
+        let long = "G \"".to_string() + &"ab ".repeat(20) + "\"";
+        let mut h = Harness::with_text(&long, 30, 10);
+
+        // wrap off: the tail is not on screen
+        assert!(!h.contains("ab \""), "no wrap yet:\n{}", h.screen());
+
+        h.ctrl('p');
+        h.type_str("word wrap");
+        h.key(KeyCode::Enter);
+        assert!(h.app.config.word_wrap);
+
+        // now the whole line is visible across rows, gutter blank on continuations
+        assert!(h.contains("ab \""), "wrapped tail shown:\n{}", h.screen());
+        assert_eq!(
+            h.line(1).trim_start().chars().next(),
+            Some('a'),
+            "cont row 2:\n{}",
+            h.screen()
+        );
+        assert!(h.line(1).starts_with("    "), "continuation gutter blank");
+    }
+
+    #[test]
+    fn word_wrap_keeps_the_cursor_on_its_visual_row() {
+        let long = "x".repeat(60);
+        let mut h = Harness::with_text(&long, 30, 8); // text width ~26
+        h.app.config.word_wrap = true;
+        h.draw();
+        // cursor at end of the (wrapped) line
+        h.key(KeyCode::End);
+        h.draw();
+        let (_cx, cy) = h.cursor_xy();
+        assert!(cy >= 2, "cursor rode the wrap down to row {cy}");
+    }
+
+    #[test]
+    fn word_wrap_can_scroll_to_the_end_of_a_giant_line() {
+        // One line longer than a whole screen of wrapped rows.
+        let long = "abcdefghij".repeat(30); // 300 chars
+        let mut h = Harness::with_text(&long, 24, 6); // ~20 wide, ~4 body rows
+        h.app.config.word_wrap = true;
+        h.key(KeyCode::End); // jump to the end of the giant line
+        h.type_str("ZEND"); // ...then mark it
+        h.draw();
+
+        assert!(
+            h.contains("ZEND"),
+            "tail reachable under wrap:\n{}",
+            h.screen()
+        );
+        let (_cx, cy) = h.cursor_xy();
+        assert!(cy < 6, "cursor stays on screen (row {cy})");
+        assert!(h.app.buf().scroll_subrow > 0, "scrolled into the line");
     }
 
     #[test]

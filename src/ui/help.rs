@@ -74,6 +74,10 @@ pub const CARD: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+P", "command palette"),
             ("Ctrl+T", "theme picker (live preview)"),
             (
+                "palette › Word Wrap",
+                "wrap long lines instead of scrolling",
+            ),
+            (
                 "F2",
                 "file tree — ↑↓ select, → / ← expand / collapse, Enter opens, r refresh, . hidden",
             ),

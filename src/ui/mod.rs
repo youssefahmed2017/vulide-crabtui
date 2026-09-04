@@ -190,6 +190,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         search_matches,
         app.search_idx,
         &diag_ranges,
+        app.config.word_wrap,
         editor_area,
     );
 

@@ -83,7 +83,8 @@ the scripts for the toolchain.
 
 v1 (`v0.1.0`) is complete — code editor, tabs, Vulpin syntax, run console, and the
 algorithm/structure viewer. Post-v1 work on this branch: terminal title, file
-tree. Still open: modal editing, soft word-wrap.
+tree, session restore, multi-language highlighting, soft word-wrap (palette ›
+Word Wrap; Up/Down still move by logical line). Still open: modal editing.
 
 ## License
 

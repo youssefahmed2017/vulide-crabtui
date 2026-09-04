@@ -48,6 +48,9 @@ pub struct Buffer {
     pub auto_indent: bool,
     pub scroll_top: usize,
     pub scroll_left: usize,
+    /// With word-wrap on: how many wrapped rows of the `scroll_top` line are
+    /// scrolled off the top. Always 0 when wrap is off.
+    pub scroll_subrow: usize,
 }
 
 /// Openers that get an auto-typed partner, with that partner.
@@ -74,6 +77,7 @@ impl Buffer {
             auto_indent: true,
             scroll_top: 0,
             scroll_left: 0,
+            scroll_subrow: 0,
         }
     }
 
